@@ -20,7 +20,9 @@ pub const doxygen = @import("doxygen.zig");
 
 /// A document, and the citations in it that name nothing.
 pub const Extraction = struct {
+    /// Everything that was read, resolved.
     document: model.Document,
+    /// Empty when every citation of a documented file names something.
     problems: []const resolve.Problem,
 };
 

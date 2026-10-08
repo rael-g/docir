@@ -20,6 +20,7 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const deepest_heading = 6;
 
+/// What writing can fail with: the arena or the writer.
 pub const Error = Allocator.Error || Writer.Error;
 
 /// Renders `document` under a first-level heading carrying `title`.

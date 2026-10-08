@@ -1,3 +1,14 @@
+//! The build side of zigdoc, which is the whole of its interface.
+//!
+//! A build that depends on this package reaches these declarations with `@import("zigdoc")`
+//! in its own `build.zig`. `addDocsStep` is the short form: one call at the end of a build
+//! function documents every artifact that build installs. `addDocs` documents one module
+//! chosen by the caller. Both take what there is to read from the modules themselves: the
+//! root source file, the imports and the include directories each was given.
+//!
+//! A step writes two files per module, `<name>.json` and then `<name>.md`, the second
+//! rendered from the first after reading it back.
+
 const std = @import("std");
 const zigdoc = @import("src/root.zig");
 
@@ -13,6 +24,8 @@ pub const Options = struct {
     documented_dirs: []const std.Build.LazyPath = &.{},
     /// Directory under the install prefix that receives the files.
     install_subdir: []const u8 = "docs",
+    /// Directory that receives the files instead of one under the install prefix.
+    output_dir: ?std.Build.LazyPath = null,
 };
 
 /// How the documentation of every installed artifact is produced.
@@ -23,9 +36,11 @@ pub const StepOptions = struct {
     documented_dirs: []const std.Build.LazyPath = &.{},
     /// Directory under the install prefix that receives the files.
     install_subdir: []const u8 = "docs",
+    /// Directory that receives the files instead of one under the install prefix.
+    output_dir: ?std.Build.LazyPath = null,
 };
 
-/// Registers a top-level step named `docs` that documents the root module of every
+/// Registers the top-level step run by `zig build docs`, which documents the root module of every
 /// artifact `b` installs, each under the name of its artifact, and returns it. An artifact
 /// whose root module has no Zig source is left out. Only the artifacts installed before
 /// the call are seen, so it belongs at the end of a build function.
@@ -43,6 +58,7 @@ pub fn addDocsStep(b: *std.Build, options: StepOptions) *std.Build.Step {
             .strict = options.strict,
             .documented_dirs = options.documented_dirs,
             .install_subdir = options.install_subdir,
+            .output_dir = options.output_dir,
         }));
     }
     return all;
@@ -72,6 +88,7 @@ pub fn addDocs(b: *std.Build, module: *std.Build.Module, options: Options) *std.
         .options = options,
     };
     for (options.documented_dirs) |dir| dir.addStepDependencies(&docs.step);
+    if (options.output_dir) |dir| dir.addStepDependencies(&docs.step);
     for (graph.items) |member| {
         if (member.root_source_file) |root| root.addStepDependencies(&docs.step);
         for (member.include_dirs.items) |include_dir| {
@@ -166,7 +183,8 @@ const DocsStep = struct {
 
         var json: std.Io.Writer.Allocating = .init(arena);
         try zigdoc.model.writeJson(&json.writer, extraction.document);
-        const json_path = b.getInstallPath(.prefix, b.pathJoin(&.{ options.install_subdir, b.fmt("{s}.json", .{options.name}) }));
+        const output_dir = if (options.output_dir) |dir| dir.getPath2(b, step) else b.getInstallPath(.prefix, options.install_subdir);
+        const json_path = b.pathJoin(&.{ output_dir, b.fmt("{s}.json", .{options.name}) });
         const cwd = std.Io.Dir.cwd();
         try cwd.createDirPath(io, std.fs.path.dirname(json_path).?);
         try cwd.writeFile(io, .{ .sub_path = json_path, .data = json.written() });
@@ -175,11 +193,12 @@ const DocsStep = struct {
         const document = try zigdoc.model.readJson(arena, stored);
         var text: std.Io.Writer.Allocating = .init(arena);
         try zigdoc.markdown.write(arena, &text.writer, options.title orelse options.name, document);
-        const markdown_path = b.getInstallPath(.prefix, b.pathJoin(&.{ options.install_subdir, b.fmt("{s}.md", .{options.name}) }));
+        const markdown_path = b.pathJoin(&.{ output_dir, b.fmt("{s}.md", .{options.name}) });
         try cwd.writeFile(io, .{ .sub_path = markdown_path, .data = text.written() });
     }
 };
 
+/// The build of zigdoc itself: its module, its tests and its own documentation.
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -193,5 +212,10 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{ .root_module = mod });
     b.step("test", "Run the tests").dependOn(&b.addRunArtifact(tests).step);
 
-    b.step("docs", "Document zigdoc with itself").dependOn(addDocs(b, mod, .{ .name = "zigdoc", .strict = true }));
+    const described = b.createModule(.{ .root_source_file = b.path("build.zig") });
+    b.step("docs", "Document zigdoc with itself").dependOn(addDocs(b, described, .{
+        .name = "zigdoc",
+        .strict = true,
+        .output_dir = b.path("docs"),
+    }));
 }

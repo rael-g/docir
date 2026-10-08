@@ -31,40 +31,61 @@ const Allocator = std.mem.Allocator;
 
 /// A name a module imports another one by. `module` indexes `Options.modules`.
 pub const ModuleImport = struct {
+    /// The name as it is written in an `@import`.
     name: []const u8,
+    /// Position in `Options.modules` of the module the name stands for.
     module: usize,
 };
 
 /// The root file of a module and what its files may import.
 pub const Module = struct {
+    /// The directory the files of the module are shown under when its root lies outside
+    /// `Options.base`. No two modules should share one.
     name: []const u8,
+    /// Path of the root file on disk.
     path: []const u8,
+    /// The modules the files of this one may import by name.
     imports: []const ModuleImport = &.{},
+    /// The directories on disk a header included by this module is looked for in.
     include_dirs: []const []const u8 = &.{},
+    /// Whether the files of the module are read only when a reference goes through them.
     reference_only: bool = false,
 };
 
 /// What to read. The first of `modules` is the one documented, and the directory of its
 /// root file is always one of the documented directories.
 pub const Options = struct {
+    /// Every module that can be reached, the documented one first.
     modules: []const Module,
+    /// Directory on disk that paths in the document are relative to.
     base: []const u8 = "",
+    /// Directories on disk whose files are documented.
     documented_dirs: []const []const u8 = &.{},
 };
 
 /// The files reached from the root of the first module.
 pub const Project = struct {
+    /// Owns everything the project allocates, the files included.
     arena: Allocator,
+    /// What the files are read through.
     io: std.Io,
+    /// What `open` was given.
     options: Options,
+    /// `Options.base` as an absolute path.
     base: []const u8 = "",
     /// The path of the root file in the document.
     root: []const u8 = "",
+    /// The documented directories as absolute paths.
     documented: std.ArrayList([]const u8) = .empty,
+    /// Path in the document of each file read by `open`, by its absolute path on disk.
     seen: std.StringHashMapUnmanaged([]const u8) = .empty,
+    /// The files read by `open`, dependencies before the files that import them.
     files: std.ArrayList(model.File) = .empty,
+    /// Where on disk each file of a reference-only module is, by its path in the document.
     postponed: std.StringHashMapUnmanaged(Postponed) = .empty,
+    /// What `reference` answered for each path it was asked.
     references: std.StringHashMapUnmanaged(?*const model.File) = .empty,
+    /// The files `reference` read, in the order they were asked for.
     referenced: std.ArrayList(*const model.File) = .empty,
 
     const Postponed = struct {

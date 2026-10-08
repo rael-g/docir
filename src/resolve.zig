@@ -30,22 +30,36 @@ const Allocator = std.mem.Allocator;
 
 /// One citation that names nothing.
 pub const Problem = struct {
+    /// Path of the file the citation is in.
     path: []const u8,
+    /// Qualified name of the declaration whose documentation cites, or a description of
+    /// the file when it is the documentation of the file.
     owner: []const u8,
+    /// The name that was not found.
     citation: []const u8,
+    /// What was expected to carry the name.
     kind: Kind,
 
-    pub const Kind = enum { symbol, parameter };
+    /// What a `Problem` is about.
+    pub const Kind = enum {
+        /// A citation that names no declaration.
+        symbol,
+        /// A documented parameter that the signature does not have.
+        parameter,
+    };
 };
 
 /// The files with their links and targets filled in, and what could not be resolved.
 pub const Result = struct {
+    /// The files given, in the same order.
     files: []const model.File,
+    /// One entry per citation of a documented file that names nothing.
     problems: []const Problem,
 };
 
 /// Supplies a file that an import leads to and that is not among the files being resolved.
 pub const Source = struct {
+    /// Passed back to `find` on every call.
     context: *anyopaque,
     /// The file at `path`, or null when there is none.
     find: *const fn (context: *anyopaque, path: []const u8) Allocator.Error!?*const model.File,
@@ -274,15 +288,20 @@ fn nested(list: []const model.Decl, name: []const u8) ?*const model.Decl {
 
 /// Iterates the code spans of Markdown text that sit on one line and outside a fenced block.
 pub const CodeSpans = struct {
+    /// The Markdown text being read.
     text: []const u8,
+    /// Offset the search for the next span starts at.
     at: usize = 0,
+    /// Whether that offset is inside a fenced block.
     fenced: bool = false,
 
+    /// One code span and where it sits in the text.
     pub const Span = struct {
         /// Offset of the opening backtick.
         start: usize,
         /// Offset just past the closing backtick.
         end: usize,
+        /// What is written between the backticks.
         content: []const u8,
     };
 
