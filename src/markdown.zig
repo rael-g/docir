@@ -28,8 +28,10 @@
 //! carries an anchor written into the file, so that a mention of it still links to it.
 //!
 //! `writePages` writes the same document as a directory of smaller files, for a tool that
-//! makes a site of them: one for each file or namespace, one for each type with documented
-//! members, an index and a table of contents.
+//! makes a site of them: one for each file or namespace, an index and a table of contents.
+//! A type with documented members gets a page of its own when it is declared in a namespace,
+//! where the namespace is only a list of them. A type declared in a file stays in the page
+//! of that file, which is then the whole of what the file declares.
 
 const std = @import("std");
 const ir = @import("ir.zig");
@@ -64,8 +66,8 @@ pub const Page = struct {
 };
 
 /// Renders `document` as several files meant for one directory: a page per section that
-/// `write` would give a file or a namespace, a page per type of it that has documented
-/// members, `index.md` listing the first under `title`, and `toc.yml`, which is the same
+/// `write` would give a file or a namespace, a page per type of a namespace that has
+/// documented members, `index.md` listing the first under `title`, and `toc.yml`, which is the same
 /// list with the types under each, as a sequence of entries with a name, the file it leads to
 /// and the entries under it. A page is
 /// named after what it documents, in lower case. A mention links across pages.
@@ -78,7 +80,7 @@ pub fn writePages(arena: Allocator, title: []const u8, document: ir.Document) Er
         try plan.append(arena, .{ .root = index, .symbol = root.symbol });
         try files.append(arena, try fileName(arena, &names, root.symbol.qualified_name));
         var types: std.ArrayList(ir.Symbol) = .empty;
-        try typesOf(arena, root.symbol.members, &types);
+        if (root.symbol.kind == .namespace) try typesOf(arena, root.symbol.members, &types);
         for (types.items) |found| {
             try renderer.paged.put(arena, found.id, plan.items.len);
             try plan.append(arena, .{ .root = index, .symbol = found, .is_type = true });
@@ -985,4 +987,43 @@ test "plain fields and enum values are rows of a table, and a mention of one lin
         \\| <a id="mode.off"></a>`OFF` |  |
         \\
     , output);
+}
+
+test "a type declared in a file is written in the page of that file" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const pages = try writePages(arena.allocator(), "Title", .{
+        .files = &.{.{ .path = "pool.h", .language = "c" }},
+        .symbols = &.{module("pool.h", "c", .{}, &.{.{
+            .id = "c:pool.h#pool",
+            .name = "pool",
+            .qualified_name = "pool",
+            .kind = .type,
+            .signature = "struct pool",
+            .doc = words("Runs."),
+            .members = &.{.{ .id = "c:pool.h#pool.stop", .name = "stop", .qualified_name = "pool.stop", .kind = .field, .form = "function pointer", .signature = "void (*stop)(void)", .doc = words("Stops.") }},
+        }}, &.{})},
+    });
+    try std.testing.expectEqual(3, pages.len);
+    try std.testing.expectEqualStrings("pool.h.md", pages[0].path);
+    try std.testing.expectEqualStrings(
+        \\# `pool.h`
+        \\
+        \\## `pool`
+        \\
+        \\```c
+        \\struct pool
+        \\```
+        \\
+        \\Runs.
+        \\
+        \\### `pool.stop`
+        \\
+        \\```c
+        \\void (*stop)(void)
+        \\```
+        \\
+        \\Stops.
+        \\
+    , pages[0].text);
 }
