@@ -46,6 +46,15 @@ pub fn write(arena: Allocator, writer: *Writer, title: []const u8, document: ir.
     }
 }
 
+/// Prints what `symbol` is and where, then `paragraph`, which is what of its documentation
+/// answered a search.
+pub fn writeHit(arena: Allocator, writer: *Writer, symbol: ir.Symbol, paragraph: []const u8, options: Options) Error!void {
+    const printer: Printer = .{ .arena = arena, .writer = writer, .width = options.width };
+    try printer.opening(symbol);
+    try writer.writeByte('\n');
+    try printer.wrapped(paragraph, indent, indent);
+}
+
 /// Prints `symbol` in full and one line for each of its members.
 pub fn writeSymbol(arena: Allocator, writer: *Writer, symbol: ir.Symbol, options: Options) Error!void {
     const printer: Printer = .{ .arena = arena, .writer = writer, .width = options.width };
@@ -81,14 +90,7 @@ const Printer = struct {
 
     fn symbol(self: Printer, found: ir.Symbol) Error!void {
         const writer = self.writer;
-        try writer.print("{s}\n{s}", .{ found.qualified_name, indent });
-        if (found.form.len != 0) try writer.print("{s}, ", .{found.form}) else try writer.print("{t}, ", .{found.kind});
-        try writer.print("{t}", .{found.visibility});
-        for (found.modifiers) |modifier| try writer.print(", {s}", .{modifier});
-        if (found.kind == .namespace and found.locations.len > 1) {
-            try writer.print(", {d} files", .{found.locations.len});
-        } else for (found.locations) |location| try writer.print(", {s}:{d}", .{ location.file, location.line });
-        try writer.writeByte('\n');
+        try self.opening(found);
         if (found.signature.len != 0) {
             try writer.writeByte('\n');
             try self.verbatim(found.signature, indent);
@@ -129,6 +131,18 @@ const Printer = struct {
             try writer.print("\n{s}Example:\n", .{indent});
             try self.verbatim(example.code, indent ++ "  ");
         }
+    }
+
+    fn opening(self: Printer, found: ir.Symbol) Error!void {
+        const writer = self.writer;
+        try writer.print("{s}\n{s}", .{ found.qualified_name, indent });
+        if (found.form.len != 0) try writer.print("{s}, ", .{found.form}) else try writer.print("{t}, ", .{found.kind});
+        try writer.print("{t}", .{found.visibility});
+        for (found.modifiers) |modifier| try writer.print(", {s}", .{modifier});
+        if (found.kind == .namespace and found.locations.len > 1) {
+            try writer.print(", {d} files", .{found.locations.len});
+        } else for (found.locations) |location| try writer.print(", {s}:{d}", .{ location.file, location.line });
+        try writer.writeByte('\n');
     }
 
     fn entry(self: Printer, name: []const u8, written_type: []const u8, said: ir.Text) Error!void {

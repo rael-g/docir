@@ -68,7 +68,10 @@ const usage_write =
 ;
 
 const usage_query =
-    \\  docir query <name> [document]          print the symbols a name asks for, as text
+    \\  docir query <name> [document]          print the symbols a name asks for, as text,
+    \\                                         or those whose documentation holds the words
+    \\                                         when no symbol has the name
+    \\      --text                             look in the documentation and not in the names
     \\      --json                             print them as JSON instead
     \\      --width <columns>                  where text breaks its lines (default: 80)
     \\
@@ -204,6 +207,8 @@ pub const Query = struct {
     input: ?[]const u8 = null,
     /// Whether the symbols found are printed as JSON.
     json: bool = false,
+    /// Whether the words are looked for in the documentation without trying the names.
+    text: bool = false,
     /// The column text is broken before.
     width: usize = 80,
     /// Where the answer goes. Null for standard output.
@@ -449,6 +454,8 @@ const Arguments = struct {
         while (try self.option()) |flag| {
             if (is(flag, "--json")) {
                 command.json = true;
+            } else if (is(flag, "--text")) {
+                command.text = true;
             } else if (is(flag, "--width")) {
                 command.width = try self.columns(flag);
             } else if (is(flag, "-o") or is(flag, "--output")) {
@@ -628,12 +635,24 @@ pub fn run(arena: Allocator, io: std.Io, args: []const [:0]const u8) !u8 {
         },
         .query => |query| {
             const document = try take(arena, io, query.input) orelse return 1;
-            const found = try docir.query.find(arena, document, query.name);
-            if (found.len == 0) {
-                try complain(arena, io, "docir: nothing is named `{s}`\n", .{query.name});
-                return 1;
-            }
+            const found: []const docir.ir.Symbol = if (query.text) &.{} else try docir.query.find(arena, document, query.name);
             var text: std.Io.Writer.Allocating = .init(arena);
+            if (found.len == 0) {
+                const hits = try docir.query.search(arena, document, query.name);
+                if (hits.len == 0) {
+                    try complain(arena, io, "docir: nothing is named `{s}` and no documentation says it\n", .{query.name});
+                    return 1;
+                }
+                if (query.json) {
+                    try std.json.Stringify.value(hits, .{ .whitespace = .indent_2 }, &text.writer);
+                    try text.writer.writeByte('\n');
+                } else for (hits, 0..) |hit, index| {
+                    if (index != 0) try text.writer.writeByte('\n');
+                    try docir.text.writeHit(arena, &text.writer, hit.symbol, hit.paragraph, .{ .width = query.width });
+                }
+                try emit(io, query.output, text.written());
+                return 0;
+            }
             if (query.json) {
                 try std.json.Stringify.value(found, .{ .whitespace = .indent_2 }, &text.writer);
                 try text.writer.writeByte('\n');

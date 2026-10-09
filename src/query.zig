@@ -6,6 +6,11 @@
 //! name, whichever separator its language writes between the parts. Last, as a piece of a
 //! name, without regard to case, which is what answers a name that is only half remembered.
 //!
+//! `search` looks in what the documentation says and not in the names: it answers every
+//! symbol with a paragraph that holds all the words asked for, without regard to case, and
+//! that paragraph with it. It is what answers a question about an idea that no symbol is
+//! named after.
+//!
 //! A namespace declared in several files is in the document once for each of them. It is
 //! answered once, with what all of them declare in it.
 
@@ -49,6 +54,55 @@ fn united(arena: Allocator, list: []const ir.Symbol) Allocator.Error![]const ir.
 
 fn languageOf(id: []const u8) []const u8 {
     return id[0 .. std.mem.indexOfScalar(u8, id, ':') orelse id.len];
+}
+
+/// A symbol whose documentation holds the words asked for.
+pub const Hit = struct {
+    /// The symbol.
+    symbol: ir.Symbol,
+    /// The first paragraph of its documentation that holds every word, as plain text.
+    paragraph: []const u8,
+};
+
+/// The symbols of `document` with a paragraph of documentation that holds every one of
+/// `words`, which are separated by spaces, in the order of the document.
+pub fn search(arena: Allocator, document: ir.Document, words: []const u8) Allocator.Error![]const Hit {
+    var wanted: std.ArrayList([]const u8) = .empty;
+    var parts = std.mem.tokenizeAny(u8, words, " \t\n");
+    while (parts.next()) |part| try wanted.append(arena, part);
+    var hits: std.ArrayList(Hit) = .empty;
+    if (wanted.items.len != 0) try searchIn(arena, document.symbols, wanted.items, &hits);
+    return hits.toOwnedSlice(arena);
+}
+
+fn searchIn(arena: Allocator, list: []const ir.Symbol, wanted: []const []const u8, hits: *std.ArrayList(Hit)) Allocator.Error!void {
+    for (list) |symbol| {
+        if (try saidBy(arena, symbol, wanted)) |paragraph| try hits.append(arena, .{ .symbol = symbol, .paragraph = paragraph });
+        try searchIn(arena, symbol.members, wanted, hits);
+    }
+}
+
+fn saidBy(arena: Allocator, symbol: ir.Symbol, wanted: []const []const u8) Allocator.Error!?[]const u8 {
+    if (try saidIn(arena, symbol.doc, wanted)) |paragraph| return paragraph;
+    for (symbol.params) |param| {
+        if (try saidIn(arena, param.doc, wanted)) |paragraph| return paragraph;
+    }
+    if (try saidIn(arena, symbol.returns, wanted)) |paragraph| return paragraph;
+    for (symbol.raises) |raised| {
+        if (try saidIn(arena, raised.doc, wanted)) |paragraph| return paragraph;
+    }
+    return null;
+}
+
+fn saidIn(arena: Allocator, text: ir.Text, wanted: []const []const u8) Allocator.Error!?[]const u8 {
+    next: for (text.blocks) |block| {
+        const paragraph = try ir.plainText(arena, .{ .blocks = &.{block} });
+        for (wanted) |word| {
+            if (std.ascii.indexOfIgnoreCase(paragraph, word) == null) continue :next;
+        }
+        return paragraph;
+    }
+    return null;
 }
 
 const Match = enum { whole, end, piece };
@@ -125,4 +179,30 @@ test "a namespace declared in several files is answered once, with the members o
     try std.testing.expectEqual(2, found[0].locations.len);
     try std.testing.expectEqual(2, found[0].members.len);
     try std.testing.expectEqualStrings("Task", found[0].members[1].name);
+}
+
+test "a search answers the symbols whose documentation holds every word, with the paragraph" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const document: ir.Document = .{ .symbols = &.{.{
+        .id = "zig:a.zig",
+        .name = "a",
+        .qualified_name = "a.zig",
+        .kind = .module,
+        .doc = .{ .blocks = &.{
+            .{ .paragraph = &.{.{ .text = "Runs the bodies of a wave." }} },
+            .{ .paragraph = &.{.{ .text = "Structural changes are applied after the Wave ends." }} },
+        } },
+        .members = &.{
+            .{ .id = "zig:a.zig#flush", .name = "flush", .qualified_name = "flush", .kind = .function, .returns = .{ .blocks = &.{.{ .paragraph = &.{.{ .text = "False when the changes of the wave fail." }} }} } },
+            .{ .id = "zig:a.zig#wave", .name = "wave", .qualified_name = "wave", .kind = .function },
+        },
+    }} };
+    const hits = try search(arena.allocator(), document, "wave changes");
+    try std.testing.expectEqual(2, hits.len);
+    try std.testing.expectEqualStrings("a.zig", hits[0].symbol.qualified_name);
+    try std.testing.expectEqualStrings("Structural changes are applied after the Wave ends.", hits[0].paragraph);
+    try std.testing.expectEqualStrings("flush", hits[1].symbol.name);
+    try std.testing.expectEqual(0, (try search(arena.allocator(), document, "nothing")).len);
+    try std.testing.expectEqual(0, (try search(arena.allocator(), document, " ")).len);
 }
