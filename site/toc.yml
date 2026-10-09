@@ -2,5 +2,7 @@
   href: reference/
 - name: Build
   href: build/
+- name: Samples
+  href: samples/
 - name: GitHub
   href: https://github.com/rael-g/docir

@@ -1,0 +1,10 @@
+[
+  { "name": "box2d", "title": "Box2D", "language": "C", "license": "MIT", "repository": "erincatto/box2d", "commit": "ac7c751eaeddbabdc1c4d41ae4f3a25d78627790", "directory": "include", "license_file": "LICENSE" },
+  { "name": "glfw", "title": "GLFW", "language": "C", "license": "Zlib", "repository": "glfw/glfw", "commit": "92dcf4ce74f2e2554a98fea09be7c705c17daa5a", "directory": "include", "license_file": "LICENSE.md" },
+  { "name": "json", "title": "JSON for Modern C++", "language": "C++", "license": "MIT", "repository": "nlohmann/json", "commit": "d33068da730aa1ffa3f1acb332e36653681efa2c", "directory": "include", "license_file": "LICENSE.MIT" },
+  { "name": "entt", "title": "EnTT", "language": "C++", "license": "MIT", "repository": "skypjack/entt", "commit": "e0f4c3763967db04f116863a0ec5e35110808a26", "directory": "src", "license_file": "LICENSE" },
+  { "name": "serilog", "title": "Serilog", "language": "C#", "license": "Apache-2.0", "repository": "serilog/serilog", "commit": "bebc7719004f76187ae72e64ce138ec2540f2070", "directory": "src/Serilog", "license_file": "LICENSE" },
+  { "name": "json-net", "title": "Json.NET", "language": "C#", "license": "MIT", "repository": "JamesNK/Newtonsoft.Json", "commit": "52fa3aef1f2cadcd3a3f874251eddc98d3efbbaa", "directory": "Src/Newtonsoft.Json", "license_file": "LICENSE.md" },
+  { "name": "libxev", "title": "libxev", "language": "Zig", "license": "MIT", "repository": "mitchellh/libxev", "commit": "9ce8e8e6ff89e583258a7f8e7adeeeaeae8611bf", "directory": "src", "license_file": "LICENSE" },
+  { "name": "zig-std", "title": "Zig standard library", "language": "Zig", "license": "MIT", "repository": "ziglang/zig", "commit": "0.16.0", "directory": "lib/std", "license_file": "LICENSE", "toolchain": true }
+]

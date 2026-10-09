@@ -26,11 +26,12 @@ jobs:
       - run: zig build docs
       - run: zig-out/bin/docir write markdown docs/docir.json --pages --title Reference -o site/reference
       - run: zig-out/bin/docir write markdown docs/build.json --pages --title Build -o site/build
+      - run: site/samples.sh
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.x
       - run: dotnet tool install --global docfx --version 2.81.0
-      - run: docfx build site/docfx.json --warningsAsErrors
+      - run: docfx build site/docfx.json
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site/_site

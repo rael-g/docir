@@ -3,6 +3,7 @@ docs/*.json
 site/_site/
 site/reference/
 site/build/
+site/samples/
 .zig-cache/
 zig-out/
 zig-pkg/
