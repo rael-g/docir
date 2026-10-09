@@ -29,7 +29,8 @@
 //! documented. The macros of every C and C++ file among them are known to all of them, since
 //! nothing says where their headers are looked for. A directory whose name starts with a dot
 //! is not entered, and neither is one
-//! of `Options.excluded_dirs`. The parts of a C# type declared in parts are then joined
+//! of `Options.excluded_dirs`, and neither it nor a file is read when its name is one of
+//! `Options.excluded_names`. The parts of a C# type declared in parts are then joined
 //! into one symbol, and a C++ member defined outside its class is joined to its declaration.
 //!
 //! In a directory there are no include directories to look in, so an include that is found
@@ -37,7 +38,8 @@
 //! and for none when several do.
 //!
 //! Every file reached is read into an `ir.Unit`, so that a reference into it resolves, but only a file under
-//! one of `Options.documented_dirs`, and under none of `Options.excluded_dirs`, is marked as
+//! one of `Options.documented_dirs`, under none of `Options.excluded_dirs` and with none of
+//! `Options.excluded_names` in its path, is marked as
 //! documented. The exception is a module that
 //! is `Module.reference_only`: an import into it is given its path without the file being
 //! read, and `Project.reference` reads one such file when a reference goes through it. Its
@@ -89,6 +91,9 @@ pub const Options = struct {
     documented_dirs: []const []const u8 = &.{},
     /// Directories on disk whose files are not documented, whatever contains them.
     excluded_dirs: []const []const u8 = &.{},
+    /// Names of files and directories that are not documented, wherever they are, and that a
+    /// directory read does not read or enter.
+    excluded_names: []const []const u8 = &.{},
 };
 
 /// The files reached from the root of the first module.
@@ -201,7 +206,7 @@ pub const Project = struct {
             if (!readable) continue;
             var parts = std.mem.tokenizeAny(u8, entry.path, "/\\");
             while (parts.next()) |part| {
-                if (part[0] == '.') continue :next;
+                if (part[0] == '.' or self.isExcludedName(part)) continue :next;
             }
             const key = try std.fs.path.join(self.arena, &.{ root_key, entry.path });
             for (self.excluded.items) |excluded| {
@@ -271,7 +276,18 @@ pub const Project = struct {
         for (self.excluded.items) |dir| {
             if (within(dir, key) != null) unit.file.documented = false;
         }
+        var parts = std.mem.tokenizeAny(u8, key, "/\\");
+        while (parts.next()) |part| {
+            if (self.isExcludedName(part)) unit.file.documented = false;
+        }
         return unit;
+    }
+
+    fn isExcludedName(self: *const Project, part: []const u8) bool {
+        for (self.options.excluded_names) |name| {
+            if (std.mem.eql(u8, name, part)) return true;
+        }
+        return false;
     }
 
     fn follow(self: *Project, importer_key: []const u8, importer_path: []const u8, module: usize, import: ir.Import, postpone: bool) Allocator.Error!?[]const u8 {
@@ -591,4 +607,25 @@ test "in a directory an include is the one file whose path ends with its name" {
     try std.testing.expectEqualStrings("lib/c/pool/ke/pool.h", main.imports[0].path);
     try std.testing.expectEqualStrings("", main.imports[1].path);
     try std.testing.expectEqualStrings("", main.imports[2].path);
+}
+
+test "a file or a directory with an excluded name is left out of a directory read" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "lib/a/build.zig", "pub fn build() void {}\n");
+    try writeFile(tmp.dir, "lib/a/src/main.zig", "pub fn run() void {}\n");
+    try writeFile(tmp.dir, "lib/a/vendor/dep.zig", "pub fn dep() void {}\n");
+
+    const base = try tmp.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+    const project = try Project.open(arena.allocator(), std.testing.io, .{
+        .modules = &.{.{ .name = "lib", .path = try std.fs.path.join(arena.allocator(), &.{ base, "lib" }) }},
+        .base = base,
+        .excluded_names = &.{ "build.zig", "vendor" },
+    });
+
+    try std.testing.expectEqual(1, project.units.items.len);
+    try std.testing.expectEqualStrings("lib/a/src/main.zig", project.units.items[0].file.path);
 }

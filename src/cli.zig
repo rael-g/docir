@@ -42,6 +42,8 @@ const usage_read =
     \\      --documented <dir>                 document a directory besides that of the root file
     \\      --excluded <dir>                   do not document a directory, and do not enter it
     \\                                         when the root is a directory
+    \\      --excluded-name <name>             do the same to every file and directory of
+    \\                                         that name, wherever it is
     \\      --depfile <file>                   write the files that were read, as a make rule
     \\
 ;
@@ -144,6 +146,8 @@ pub const Read = struct {
     documented: []const []const u8 = &.{},
     /// Directories that are not documented.
     excluded: []const []const u8 = &.{},
+    /// Names of files and directories that are not documented, wherever they are.
+    excluded_names: []const []const u8 = &.{},
     /// Where the list of the files read goes, as the rule of a makefile, for a build
     /// system to know when to read again. Null to write none.
     depfile: ?[]const u8 = null,
@@ -338,6 +342,7 @@ const Arguments = struct {
         var references: std.ArrayList(Named) = .empty;
         var documented: std.ArrayList([]const u8) = .empty;
         var excluded: std.ArrayList([]const u8) = .empty;
+        var excluded_names: std.ArrayList([]const u8) = .empty;
         while (try self.option()) |flag| {
             if (is(flag, "--name")) {
                 command.name = try self.value(flag);
@@ -366,6 +371,8 @@ const Arguments = struct {
                 try documented.append(self.arena, try self.value(flag));
             } else if (is(flag, "--excluded")) {
                 try excluded.append(self.arena, try self.value(flag));
+            } else if (is(flag, "--excluded-name")) {
+                try excluded_names.append(self.arena, try self.value(flag));
             } else if (is(flag, "--depfile")) {
                 command.depfile = try self.value(flag);
             } else if (is(flag, "-o") or is(flag, "--output")) {
@@ -381,6 +388,7 @@ const Arguments = struct {
         command.references = try references.toOwnedSlice(self.arena);
         command.documented = try documented.toOwnedSlice(self.arena);
         command.excluded = try excluded.toOwnedSlice(self.arena);
+        command.excluded_names = try excluded_names.toOwnedSlice(self.arena);
         return command;
     }
 
@@ -510,6 +518,7 @@ pub fn options(arena: Allocator, command: Read, message: *[]const u8) error{ Inv
         .base = command.base,
         .documented_dirs = command.documented,
         .excluded_dirs = command.excluded,
+        .excluded_names = command.excluded_names,
     };
 }
 

@@ -30,6 +30,9 @@ pub const Options = struct {
     documented_dirs: []const std.Build.LazyPath = &.{},
     /// Directories whose files are read and not documented, such as vendored code.
     excluded_dirs: []const std.Build.LazyPath = &.{},
+    /// Names of files and directories that are not documented, wherever they are, such as
+    /// a build file that every package has.
+    excluded_names: []const []const u8 = &.{},
     /// Directory under the install prefix that receives the files.
     install_subdir: []const u8 = "docs",
     /// Directory of the source tree, relative to the build root, that receives the files
@@ -51,6 +54,9 @@ pub const StepOptions = struct {
     documented_dirs: []const std.Build.LazyPath = &.{},
     /// Directories whose files are read and not documented, such as vendored code.
     excluded_dirs: []const std.Build.LazyPath = &.{},
+    /// Names of files and directories that are not documented, wherever they are, such as
+    /// a build file that every package has.
+    excluded_names: []const []const u8 = &.{},
     /// Directory under the install prefix that receives the files.
     install_subdir: []const u8 = "docs",
     /// Directory of the source tree, relative to the build root, that receives the files
@@ -81,6 +87,7 @@ pub fn addDocsStep(b: *std.Build, program: *std.Build.Step.Compile, options: Ste
             .strict = options.strict,
             .documented_dirs = options.documented_dirs,
             .excluded_dirs = options.excluded_dirs,
+            .excluded_names = options.excluded_names,
             .install_subdir = options.install_subdir,
             .source_dir = options.source_dir,
             .order = options.order,
@@ -186,6 +193,7 @@ fn finish(b: *std.Build, program: *std.Build.Step.Compile, read: *std.Build.Step
         read.addArg("--excluded");
         read.addDirectoryArg(dir);
     }
+    for (options.excluded_names) |name| read.addArgs(&.{ "--excluded-name", name });
     read.addArg("-o");
     const unlinked = read.addOutputFileArg(b.fmt("{s}.json", .{options.name}));
 
