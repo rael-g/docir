@@ -32,6 +32,10 @@
 //! of `Options.excluded_dirs`. The parts of a C# type declared in parts are then joined
 //! into one symbol, and a C++ member defined outside its class is joined to its declaration.
 //!
+//! In a directory there are no include directories to look in, so an include that is found
+//! nowhere else is taken for the one file of the directory whose path ends with its name,
+//! and for none when several do.
+//!
 //! Every file reached is read into an `ir.Unit`, so that a reference into it resolves, but only a file under
 //! one of `Options.documented_dirs`, and under none of `Options.excluded_dirs`, is marked as
 //! documented. The exception is a module that
@@ -115,6 +119,13 @@ pub const Project = struct {
     macros: std.ArrayList([]const u8) = .empty,
     /// What `reference` read, in the order it was asked for.
     referenced: std.ArrayList(*const ir.Unit) = .empty,
+    /// Every file a directory read found, before any of them is read.
+    walked: std.ArrayList(Walked) = .empty,
+
+    const Walked = struct {
+        key: []const u8,
+        path: []const u8,
+    };
 
     const Postponed = struct {
         key: []const u8,
@@ -213,8 +224,9 @@ pub const Project = struct {
         }
         for (found.items) |key| {
             const path = within(self.base, key) orelse try std.fs.path.join(self.arena, &.{ self.options.modules[0].name, within(root_key, key).? });
-            _ = try self.visit(key, try self.slashed(path), 0);
+            try self.walked.append(self.arena, .{ .key = key, .path = try self.slashed(path) });
         }
+        for (self.walked.items) |file| _ = try self.visit(file.key, file.path, 0);
         try csharp_source.join(self.arena, self.units.items);
         try c_source.join(self.arena, self.units.items);
     }
@@ -295,7 +307,15 @@ pub const Project = struct {
                     const found = try self.visit(try std.fs.path.resolve(self.arena, &.{ dir, import.name }), try self.slashed(import.name), module);
                     if (found) |path| return path;
                 }
-                return null;
+                var only: ?Walked = null;
+                for (self.walked.items) |file| {
+                    if (file.path.len <= import.name.len or !std.mem.endsWith(u8, file.path, import.name)) continue;
+                    if (file.path[file.path.len - import.name.len - 1] != '/') continue;
+                    if (only != null) return null;
+                    only = file;
+                }
+                const named = only orelse return null;
+                return self.visit(named.key, named.path, module);
             },
         }
     }
@@ -541,4 +561,34 @@ test "a directory given as the root has every file a reader exists for read, wit
     const pool = project.units.items[0].symbol.members[0].members[0];
     try std.testing.expectEqual(2, pool.members.len);
     try std.testing.expectEqual(0, project.units.items[1].symbol.members[0].members.len);
+}
+
+test "in a directory an include is the one file whose path ends with its name" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "lib/c/pool/ke/pool.h", "void stop(void);\n");
+    try writeFile(tmp.dir, "lib/c/a/ke/twice.h", "void a(void);\n");
+    try writeFile(tmp.dir, "lib/c/b/ke/twice.h", "void b(void);\n");
+    try writeFile(tmp.dir, "lib/zig/main.zig",
+        \\const c = @cImport({
+        \\    @cInclude("ke/pool.h");
+        \\    @cInclude("ke/twice.h");
+        \\    @cInclude("e/pool.h");
+        \\});
+    );
+
+    const base = try tmp.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+    const project = try Project.open(arena.allocator(), std.testing.io, .{
+        .modules = &.{.{ .name = "lib", .path = try std.fs.path.join(arena.allocator(), &.{ base, "lib" }) }},
+        .base = base,
+    });
+
+    try std.testing.expectEqual(4, project.units.items.len);
+    const main = try fileNamed(project, "lib/zig/main.zig");
+    try std.testing.expectEqualStrings("lib/c/pool/ke/pool.h", main.imports[0].path);
+    try std.testing.expectEqualStrings("", main.imports[1].path);
+    try std.testing.expectEqualStrings("", main.imports[2].path);
 }
