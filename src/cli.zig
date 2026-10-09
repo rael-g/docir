@@ -68,13 +68,15 @@ const usage_write =
 ;
 
 const usage_query =
-    \\  docir query <name> [document]          print the symbols a name asks for, as text,
+    \\  docir query <name> [document...]       print the symbols a name asks for, as text,
     \\                                         or those whose documentation holds the words
     \\                                         when no symbol has the name
     \\      --text                             look in the documentation and not in the names
     \\      --members                          print one line for each member of the symbols
     \\                                         found, and not what they say
-    \\  docir query --list [document]          print the files and namespaces of a document
+    \\  docir query --list [document...]       print the files and namespaces of a document
+    \\                                         a document may be a directory, for every
+    \\                                         .json file in it, and several are read as one
     \\      --full                             print every symbol in full, however many
     \\      --limit-full <count>               print one line a symbol when there are more
     \\                                         than this many (default: 5)
@@ -209,8 +211,9 @@ pub const Write = struct {
 pub const Query = struct {
     /// The name asked for.
     name: []const u8,
-    /// The document to look in. Null to read it from standard input.
-    input: ?[]const u8 = null,
+    /// The documents to look in, each a file or a directory of them. None to read one from
+    /// standard input.
+    inputs: []const []const u8 = &.{},
     /// Whether the symbols found are printed as JSON.
     json: bool = false,
     /// Whether the words are looked for in the documentation without trying the names.
@@ -485,15 +488,13 @@ const Arguments = struct {
         }
         if (command.list) {
             if (command.text or command.members) return self.invalid("--list asks for no name, so it goes with neither --text nor --members", .{});
-            try self.atMost(1, "one document");
-            if (self.positional.items.len == 1) command.input = self.positional.items[0];
+            command.inputs = self.positional.items;
             return command;
         }
         if (command.text and command.members) return self.invalid("--members lists what symbols hold, and --text finds none by name", .{});
-        try self.atMost(2, "one name and one document");
         if (self.positional.items.len == 0) return self.invalid("query needs the name to look for", .{});
         command.name = self.positional.items[0];
-        if (self.positional.items.len == 2) command.input = self.positional.items[1];
+        command.inputs = self.positional.items[1..];
         return command;
     }
 
@@ -662,7 +663,7 @@ pub fn run(arena: Allocator, io: std.Io, args: []const [:0]const u8) !u8 {
             return 0;
         },
         .query => |query| {
-            const document = try take(arena, io, query.input) orelse return 1;
+            const document = try takeAll(arena, io, query.inputs) orelse return 1;
             var text: std.Io.Writer.Allocating = .init(arena);
             if (query.list) {
                 const roots = try docir.query.roots(arena, document);
@@ -740,6 +741,38 @@ fn take(arena: Allocator, io: std.Io, path: ?[]const u8) !?docir.ir.Document {
         try complain(arena, io, "docir: {s} is not a document this version reads: {t}\n", .{ shown, err });
         return null;
     };
+}
+
+fn takeAll(arena: Allocator, io: std.Io, inputs: []const []const u8) !?docir.ir.Document {
+    if (inputs.len == 0) return take(arena, io, null);
+    var paths: std.ArrayList([]const u8) = .empty;
+    for (inputs) |input| {
+        var dir = std.Io.Dir.cwd().openDir(io, input, .{ .iterate = true }) catch {
+            try paths.append(arena, input);
+            continue;
+        };
+        defer dir.close(io);
+        var inside: std.ArrayList([]const u8) = .empty;
+        var entries = dir.iterate();
+        while (try entries.next(io)) |entry| {
+            if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".json")) continue;
+            try inside.append(arena, try std.fs.path.join(arena, &.{ input, entry.name }));
+        }
+        std.mem.sort([]const u8, inside.items, {}, struct {
+            fn before(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.before);
+        try paths.appendSlice(arena, inside.items);
+    }
+    if (paths.items.len == 0) {
+        try complain(arena, io, "docir: no document was found in what query was given\n", .{});
+        return null;
+    }
+    if (paths.items.len == 1) return take(arena, io, paths.items[0]);
+    var documents: std.ArrayList(docir.ir.Document) = .empty;
+    for (paths.items) |path| try documents.append(arena, try take(arena, io, path) orelse return null);
+    return try docir.combine(arena, documents.items);
 }
 
 fn emitDocument(arena: Allocator, io: std.Io, path: ?[]const u8, document: docir.ir.Document) !void {
@@ -869,4 +902,22 @@ test "help is asked for by name or after a command, and the version by its own w
     try std.testing.expectError(error.Invalid, parse(arena.allocator(), &.{ "help", "render" }, &message));
     try std.testing.expect(std.mem.indexOf(u8, usageOf(.link), "--strict") != null);
     try std.testing.expect(std.mem.indexOf(u8, usageOf(.link), "--pages") == null);
+}
+
+test "query takes a name and any number of documents, or lists with no name" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var message: []const u8 = "";
+    const asked = (try parse(arena.allocator(), &.{ "query", "Pool.wait", "a.json", "docs", "--text", "--limit-full", "2" }, &message)).query;
+    try std.testing.expectEqualStrings("Pool.wait", asked.name);
+    try std.testing.expectEqual(2, asked.inputs.len);
+    try std.testing.expect(asked.text);
+    try std.testing.expectEqual(2, asked.limit_full.?);
+    try std.testing.expectEqual(null, (try parse(arena.allocator(), &.{ "query", "Pool", "--full" }, &message)).query.limit_full);
+    const listed = (try parse(arena.allocator(), &.{ "query", "--list", "docs" }, &message)).query;
+    try std.testing.expect(listed.list);
+    try std.testing.expectEqual(1, listed.inputs.len);
+    try std.testing.expectError(error.Invalid, parse(arena.allocator(), &.{ "query", "--list", "--text" }, &message));
+    try std.testing.expectError(error.Invalid, parse(arena.allocator(), &.{ "query", "Pool", "--text", "--members" }, &message));
+    try std.testing.expectError(error.Invalid, parse(arena.allocator(), &.{"query"}, &message));
 }
