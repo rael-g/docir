@@ -22,7 +22,9 @@
 //!
 //! The fields of a type that need no more than a line, and the values of an enumeration,
 //! are not given sections: they are the rows of a table under the type, with the type and
-//! the default of a field or the value of an enumerator beside its description. A field
+//! the default of a field or the value of an enumerator beside its description. The
+//! constants, variables, aliases and macros without parameters of a file or of a type are
+//! the rows of another, written before anything else it declares. A field
 //! stays a section when it is described in more than one paragraph, takes parameters, holds
 //! members or carries a form of its own, as one that points to a function does. A row
 //! carries an anchor written into the file, so that a mention of it still links to it.
@@ -320,7 +322,7 @@ const Renderer = struct {
             listed = true;
             try writer.print("- [{s}]({s})\n", .{ try self.code(next.symbol.name), self.files[position] });
         }
-        for (root.symbol.members) |member| try self.section(root.language, member, 2);
+        try self.membersOf(root.language, root.symbol.members, 2);
         if (root.symbol.verified.len != 0) {
             try self.heading(2, "Verified behaviour", false, null);
             try writer.writeByte('\n');
@@ -372,7 +374,7 @@ const Renderer = struct {
                 }
             }
             if (!root.symbol.doc.isEmpty()) try writer.print("\n{s}\n", .{try self.text(root.symbol.doc)});
-            for (root.symbol.members) |member| try self.section(root.language, member, level);
+            try self.membersOf(root.language, root.symbol.members, level);
             if (root.symbol.verified.len != 0) {
                 try self.heading(level, "Verified behaviour", false, null);
                 try writer.writeByte('\n');
@@ -425,33 +427,49 @@ const Renderer = struct {
         for (symbol.examples) |example| {
             try writer.print("\n**Example:**\n\n```{s}\n{s}\n```\n", .{ if (example.language.len != 0) example.language else language, example.code });
         }
-        try self.memberTable(symbol, .field);
-        try self.memberTable(symbol, .enumerator);
-        for (symbol.members) |member| {
-            if (!isRow(member)) try self.section(language, member, level + 1);
+        try self.membersOf(language, symbol.members, level + 1);
+    }
+
+    fn membersOf(self: *Renderer, language: []const u8, list: []const ir.Symbol, level: usize) Error!void {
+        try self.memberTable(list, .value);
+        try self.memberTable(list, .field);
+        try self.memberTable(list, .enumerator);
+        for (list) |member| {
+            if (!isRow(member)) try self.section(language, member, level);
         }
     }
 
-    fn memberTable(self: *Renderer, symbol: ir.Symbol, kind: ir.Kind) Error!void {
+    fn memberTable(self: *Renderer, list: []const ir.Symbol, group: Group) Error!void {
         const writer = self.writer;
         var rows: usize = 0;
+        var typed_rows = false;
         var valued = false;
-        for (symbol.members) |member| {
-            if (member.kind != kind or !isRow(member)) continue;
+        for (list) |member| {
+            if (!isRow(member) or Group.of(member.kind) != group) continue;
             rows += 1;
+            if (member.type.text.len != 0) typed_rows = true;
             if (member.value.len != 0) valued = true;
         }
         if (rows == 0) return;
-        if (kind == .field) {
-            try writer.writeAll(if (valued) "\n| Field | Type | Default | Description |\n|---|---|---|---|\n" else "\n| Field | Type | Description |\n|---|---|---|\n");
-        } else {
-            try writer.writeAll(if (valued) "\n| Name | Value | Description |\n|---|---|---|\n" else "\n| Value | Description |\n|---|---|\n");
-        }
-        for (symbol.members) |member| {
-            if (member.kind != kind or !isRow(member)) continue;
+        const with_type = typed_rows and group != .enumerator;
+        const first = switch (group) {
+            .field => "Field",
+            .enumerator => if (valued) "Name" else "Value",
+            .value => "Name",
+        };
+        const second = if (group == .field) "Default" else "Value";
+        try writer.print("\n| {s} |", .{first});
+        if (with_type) try writer.writeAll(" Type |");
+        if (valued) try writer.print(" {s} |", .{second});
+        try writer.writeAll(" Description |\n|---|");
+        if (with_type) try writer.writeAll("---|");
+        if (valued) try writer.writeAll("---|");
+        try writer.writeAll("---|\n");
+        for (list) |member| {
+            if (!isRow(member) or Group.of(member.kind) != group) continue;
             try writer.print("| <a id=\"{s}\"></a>{s} |", .{ try self.rowAnchor(member), try self.cellCode(member.name) });
-            if (kind == .field) try writer.print(" {s} |", .{try self.typeCell(member.type)});
-            if (valued) try writer.print(" {s} |", .{try self.cellCode(member.value)});
+            if (with_type) try writer.print(" {s} |", .{try self.typeCell(member.type)});
+            if (valued) try writer.print(" {s} |", .{try self.typeCell(.{ .text = member.value, .target = member.target })});
             try writer.print(" {s} |\n", .{try self.cell(member.doc)});
         }
     }
@@ -636,9 +654,24 @@ const Renderer = struct {
     }
 };
 
+const Group = enum {
+    value,
+    field,
+    enumerator,
+
+    fn of(kind: ir.Kind) ?Group {
+        return switch (kind) {
+            .constant, .variable, .alias, .macro => .value,
+            .field => .field,
+            .enumerator => .enumerator,
+            else => null,
+        };
+    }
+};
+
 fn isRow(member: ir.Symbol) bool {
-    if (member.kind != .field and member.kind != .enumerator) return false;
-    if (!member.isListed() or member.form.len != 0) return false;
+    if (Group.of(member.kind) == null or !member.isListed()) return false;
+    if (member.kind == .field and member.form.len != 0) return false;
     if (member.doc.blocks.len > 1) return false;
     if (member.doc.blocks.len == 1 and member.doc.blocks[0] != .paragraph) return false;
     return member.params.len == 0 and member.type_params.len == 0 and member.returns.isEmpty() and member.raises.len == 0 and member.examples.len == 0 and member.members.len == 0;
@@ -1133,4 +1166,39 @@ test "the pages of files are listed as the tree of their directories" {
         \\  href: top.zig.md
         \\
     , pages[5].text);
+}
+
+test "constants, aliases and plain macros open their file as one table" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const output = try render(arena.allocator(), .{
+        .files = &.{.{ .path = "a.zig", .language = "zig" }},
+        .symbols = &.{module("a.zig", "zig", .{}, &.{
+            .{ .id = "zig:a.zig#Pool", .name = "Pool", .qualified_name = "Pool", .kind = .type, .signature = "pub const Pool = struct" },
+            .{ .id = "zig:a.zig#limit", .name = "limit", .qualified_name = "limit", .kind = .constant, .signature = "pub const limit: usize = 64", .type = .{ .text = "usize" }, .value = "64", .doc = words("How many.") },
+            .{ .id = "zig:a.zig#Other", .name = "Other", .qualified_name = "Other", .kind = .alias, .signature = "pub const Other = Pool", .value = "Pool", .target = "zig:a.zig#Pool" },
+            .{ .id = "zig:a.zig#SET", .name = "SET", .qualified_name = "SET", .kind = .macro, .signature = "#define SET(x) x", .value = "x", .params = &.{.{ .name = "x" }} },
+        }, &.{})},
+    });
+    try std.testing.expectEqualStrings(
+        \\# Title
+        \\
+        \\| Name | Type | Value | Description |
+        \\|---|---|---|---|
+        \\| <a id="limit."></a>`limit` | `usize` | `64` | How many. |
+        \\| <a id="other."></a>`Other` |  | [`Pool`](#pool) |  |
+        \\
+        \\## `Pool`
+        \\
+        \\```zig
+        \\pub const Pool = struct
+        \\```
+        \\
+        \\## `SET`
+        \\
+        \\```zig
+        \\#define SET(x) x
+        \\```
+        \\
+    , output);
 }
