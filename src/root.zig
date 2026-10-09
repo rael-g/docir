@@ -37,11 +37,19 @@ pub fn read(arena: std.mem.Allocator, io: std.Io, options: project.Options) !ir.
     return documentOf(arena, try project.Project.open(arena, io, options));
 }
 
-/// The document of what `loaded` read, not linked.
+/// The document of what `loaded` read, not linked. Its files are in the order of their
+/// paths, so the same sources always give the same document, whatever order they were
+/// reached in and whether they were read from a root file or from a directory.
 pub fn documentOf(arena: std.mem.Allocator, loaded: project.Project) std.mem.Allocator.Error!ir.Document {
-    const files = try arena.alloc(ir.File, loaded.units.items.len);
-    const symbols = try arena.alloc(ir.Symbol, loaded.units.items.len);
-    for (files, symbols, loaded.units.items) |*file, *symbol, unit| {
+    const units = try arena.dupe(ir.Unit, loaded.units.items);
+    std.mem.sort(ir.Unit, units, {}, struct {
+        fn before(_: void, a: ir.Unit, b: ir.Unit) bool {
+            return std.mem.lessThan(u8, a.file.path, b.file.path);
+        }
+    }.before);
+    const files = try arena.alloc(ir.File, units.len);
+    const symbols = try arena.alloc(ir.Symbol, units.len);
+    for (files, symbols, units) |*file, *symbol, unit| {
         file.* = unit.file;
         symbol.* = unit.symbol;
     }
@@ -111,6 +119,42 @@ test "combined documents hold each file once" {
     try std.testing.expectEqual(2, combined.symbols.len);
     try std.testing.expect(combined.files[0].documented);
     try std.testing.expect(!combined.linked);
+}
+
+test "the files of a document are in the order of their paths" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(std.testing.io, "plugin/src");
+    try tmp.dir.createDirPath(std.testing.io, "plugin/include");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "plugin/src/main.zig", .data =
+        \\const zebra = @import("zebra.zig");
+        \\const apple = @import("apple.zig");
+        \\const c = @cImport(@cInclude("pool.h"));
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "plugin/src/zebra.zig", .data = "const apple = @import(\"apple.zig\");\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "plugin/src/apple.zig", .data = "pub fn eat() void {}\n" });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "plugin/include/pool.h", .data = "void stop(void);\n" });
+
+    const base = try tmp.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+    const join = std.fs.path.join;
+    const document = try read(arena.allocator(), std.testing.io, .{
+        .modules = &.{.{
+            .name = "plugin",
+            .path = try join(arena.allocator(), &.{ base, "plugin/src/main.zig" }),
+            .include_dirs = &.{try join(arena.allocator(), &.{ base, "plugin/include" })},
+        }},
+        .base = try join(arena.allocator(), &.{ base, "plugin" }),
+    });
+
+    const expected: []const []const u8 = &.{ "pool.h", "src/apple.zig", "src/main.zig", "src/zebra.zig" };
+    try std.testing.expectEqual(expected.len, document.files.len);
+    for (expected, document.files, document.symbols) |path, file, symbol| {
+        try std.testing.expectEqualStrings(path, file.path);
+        try std.testing.expectEqualStrings(path, symbol.locations[0].file);
+    }
 }
 
 test {
