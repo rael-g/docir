@@ -63,7 +63,7 @@ pub fn write(arena: Allocator, writer: *Writer, title: []const u8, document: ir.
 
 /// One file of a document written as several.
 pub const Page = struct {
-    /// Name of the file, with no directory in it.
+    /// Path of the file under the directory of the pages, with `/` between its parts.
     path: []const u8,
     /// What the file holds.
     text: []const u8,
@@ -76,7 +76,8 @@ pub const Page = struct {
 /// and the entries under it. The files are listed as the tree of their directories, a
 /// directory being an entry that leads nowhere and holds what is in it, and directories
 /// that hold nothing but one another being one entry. A page is
-/// named after what it documents, in lower case. A mention links across pages.
+/// named after what it documents, in lower case, and the page of a file is written at the
+/// path of that file. A mention links across pages.
 pub fn writePages(arena: Allocator, title: []const u8, document: ir.Document) Error![]const Page {
     var renderer: Renderer = .{ .arena = arena, .roots = try rootsOf(arena, document), .title = title };
     var plan: std.ArrayList(Planned) = .empty;
@@ -84,13 +85,13 @@ pub fn writePages(arena: Allocator, title: []const u8, document: ir.Document) Er
     var files: std.ArrayList([]const u8) = .empty;
     for (renderer.roots, 0..) |root, index| {
         try plan.append(arena, .{ .root = index, .symbol = root.symbol });
-        try files.append(arena, try fileName(arena, &names, root.symbol.qualified_name));
+        try files.append(arena, try fileName(arena, &names, root.symbol.qualified_name, root.symbol.kind == .module));
         var types: std.ArrayList(ir.Symbol) = .empty;
         if (root.symbol.kind == .namespace) try typesOf(arena, root.symbol.members, &types);
         for (types.items) |found| {
             try renderer.paged.put(arena, found.id, plan.items.len);
             try plan.append(arena, .{ .root = index, .symbol = found, .is_type = true });
-            try files.append(arena, try fileName(arena, &names, found.qualified_name));
+            try files.append(arena, try fileName(arena, &names, found.qualified_name, false));
         }
     }
     renderer.files = files.items;
@@ -180,14 +181,19 @@ fn typesOf(arena: Allocator, list: []const ir.Symbol, out: *std.ArrayList(ir.Sym
     }
 }
 
-fn fileName(arena: Allocator, taken: *std.StringHashMapUnmanaged(usize), name: []const u8) Allocator.Error![]const u8 {
+fn fileName(arena: Allocator, taken: *std.StringHashMapUnmanaged(usize), name: []const u8, as_path: bool) Allocator.Error![]const u8 {
     var slug: std.ArrayList(u8) = .empty;
     for (name) |ch| {
         const kept = std.ascii.isAlphanumeric(ch) or ch == '.' or ch == '_';
+        const ends_part = slug.items.len != 0 and (slug.items[slug.items.len - 1] == '-' or slug.items[slug.items.len - 1] == '/');
         if (kept) {
             try slug.append(arena, std.ascii.toLower(ch));
-        } else if (slug.items.len != 0 and slug.items[slug.items.len - 1] != '-') try slug.append(arena, '-');
+        } else if (as_path and ch == '/') {
+            if (slug.items.len != 0 and slug.items[slug.items.len - 1] == '-') _ = slug.pop();
+            if (slug.items.len != 0 and slug.items[slug.items.len - 1] != '/') try slug.append(arena, '/');
+        } else if (slug.items.len != 0 and !ends_part) try slug.append(arena, '-');
     }
+    while (slug.items.len != 0 and (slug.items[slug.items.len - 1] == '/' or slug.items[slug.items.len - 1] == '-')) _ = slug.pop();
     if (slug.items.len == 0 or std.mem.eql(u8, slug.items, "index") or std.mem.eql(u8, slug.items, "toc")) try slug.appendSlice(arena, "-page");
     const entry = try taken.getOrPut(arena, try arena.dupe(u8, slug.items));
     if (entry.found_existing) {
@@ -196,6 +202,20 @@ fn fileName(arena: Allocator, taken: *std.StringHashMapUnmanaged(usize), name: [
     }
     entry.value_ptr.* = 0;
     return std.fmt.allocPrint(arena, "{s}.md", .{slug.items});
+}
+
+fn relative(arena: Allocator, from: []const u8, to: []const u8) Allocator.Error![]const u8 {
+    var shared: usize = 0;
+    var at: usize = 0;
+    while (at < from.len and at < to.len and from[at] == to[at]) : (at += 1) {
+        if (from[at] == '/') shared = at + 1;
+    }
+    var out: std.ArrayList(u8) = .empty;
+    for (from[shared..]) |ch| {
+        if (ch == '/') try out.appendSlice(arena, "../");
+    }
+    try out.appendSlice(arena, to[shared..]);
+    return out.toOwnedSlice(arena);
 }
 
 fn yamlString(arena: Allocator, name: []const u8) Allocator.Error![]const u8 {
@@ -322,7 +342,7 @@ const Renderer = struct {
             if (!listed) try self.heading(2, "Types", false, null);
             if (!listed) try writer.writeByte('\n');
             listed = true;
-            try writer.print("- [{s}]({s})\n", .{ try self.code(next.symbol.name), self.files[position] });
+            try writer.print("- [{s}]({s})\n", .{ try self.code(next.symbol.name), try relative(self.arena, self.files[index], self.files[position]) });
         }
         try self.membersOf(root.language, root.symbol.members, 2);
         if (root.symbol.verified.len != 0) {
@@ -359,7 +379,7 @@ const Renderer = struct {
     fn linkTo(self: *Renderer, target: []const u8) Allocator.Error!?[]const u8 {
         const anchor = self.anchors.get(target) orelse return null;
         if (anchor.page == self.current) return try std.fmt.allocPrint(self.arena, "#{s}", .{anchor.name});
-        return try std.fmt.allocPrint(self.arena, "{s}#{s}", .{ self.files[anchor.page], anchor.name });
+        return try std.fmt.allocPrint(self.arena, "{s}#{s}", .{ try relative(self.arena, self.files[self.current], self.files[anchor.page]), anchor.name });
     }
 
     fn run(self: *Renderer) Error!void {
@@ -1192,10 +1212,10 @@ test "the pages of files are listed as the tree of their directories" {
         \\# Title
         \\
         \\- `c/pool/ke/pool`
-        \\  - [`pool.h`](c-pool-ke-pool-pool.h.md)
+        \\  - [`pool.h`](c/pool/ke/pool/pool.h.md)
         \\- `zig/pool/src`
-        \\  - [`a.zig`](zig-pool-src-a.zig.md)
-        \\  - [`b.zig`](zig-pool-src-b.zig.md)
+        \\  - [`a.zig`](zig/pool/src/a.zig.md)
+        \\  - [`b.zig`](zig/pool/src/b.zig.md)
         \\- [`top.zig`](top.zig.md)
         \\
     , pages[4].text);
@@ -1203,13 +1223,13 @@ test "the pages of files are listed as the tree of their directories" {
         \\- name: "c/pool/ke/pool"
         \\  items:
         \\  - name: "pool.h"
-        \\    href: c-pool-ke-pool-pool.h.md
+        \\    href: c/pool/ke/pool/pool.h.md
         \\- name: "zig/pool/src"
         \\  items:
         \\  - name: "a.zig"
-        \\    href: zig-pool-src-a.zig.md
+        \\    href: zig/pool/src/a.zig.md
         \\  - name: "b.zig"
-        \\    href: zig-pool-src-b.zig.md
+        \\    href: zig/pool/src/b.zig.md
         \\- name: "top.zig"
         \\  href: top.zig.md
         \\
@@ -1278,4 +1298,28 @@ test "a long signature is broken at its parameters and a short one is kept" {
         \\    void *user_data
         \\)
     , try broken(arena.allocator(), "ke_task *(*dispatch_on_complete)(struct ke_scheduler *self, ke_task_func func, void *data, ke_task_on_complete_func on_complete, void *user_data)"));
+}
+
+test "the page of a file is at the path of the file, and a link between pages is relative" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const pages = try writePages(arena.allocator(), "Title", .{
+        .files = &.{ .{ .path = "c/pool/pool.h", .language = "c" }, .{ .path = "zig/pool/src/Main File.zig", .language = "zig" } },
+        .symbols = &.{
+            module("c/pool/pool.h", "c", .{}, &.{.{ .id = "c:c/pool/pool.h#pool", .name = "pool", .qualified_name = "pool", .kind = .type, .signature = "struct pool" }}, &.{}),
+            module("zig/pool/src/Main File.zig", "zig", .{ .blocks = &.{.{ .paragraph = &.{.{ .ref = .{ .text = "pool", .target = "c:c/pool/pool.h#pool" } }} }} }, &.{}, &.{}),
+        },
+    });
+    try std.testing.expectEqualStrings("c/pool/pool.h.md", pages[0].path);
+    try std.testing.expectEqualStrings("zig/pool/src/main-file.zig.md", pages[1].path);
+    try std.testing.expectEqualStrings(
+        \\# `zig/pool/src/Main File.zig`
+        \\
+        \\[`pool`](../../../c/pool/pool.h.md#pool)
+        \\
+    , pages[1].text);
+    try std.testing.expectEqualStrings("b.md", try relative(arena.allocator(), "a.md", "b.md"));
+    try std.testing.expectEqualStrings("../b.md", try relative(arena.allocator(), "x/a.md", "b.md"));
+    try std.testing.expectEqualStrings("y/b.md", try relative(arena.allocator(), "x/a.md", "x/y/b.md"));
+    try std.testing.expectEqualStrings("../xy/b.md", try relative(arena.allocator(), "x/a.md", "xy/b.md"));
 }
