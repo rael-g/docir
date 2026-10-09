@@ -542,6 +542,15 @@ pages: bool = false
 
 Whether Markdown is written as a directory of pages, which [`output`](#writeoutput) then names.
 
+#### `Write.order`
+
+```zig
+order: []const []const u8 = &.{}
+```
+
+Directories and files of the document, each coming before the next and all of them
+before the files under none.
+
 #### `Write.output`
 
 ```zig
@@ -2769,6 +2778,17 @@ The document of what `loaded` read, not linked. Its files are in the order of th
 paths, so the same sources always give the same document, whatever order they were
 reached in and whether they were read from a root file or from a directory.
 
+### `ordered`
+
+```zig
+pub fn ordered(arena: std.mem.Allocator, document: ir.Document, prefixes: []const []const u8) std.mem.Allocator.Error!ir.Document
+```
+
+`document` with its files rearranged for a writer: those under the first of `prefixes`
+come first, then those under the second, and so on, and a file under none of them comes
+after all of those. A prefix is a directory or a whole file path, as the document names
+it. Within one group the files keep the order they had.
+
 ### `combine`
 
 ```zig
@@ -2802,6 +2822,7 @@ One line saying what `problem` is, for the person who wrote the documentation.
 
 - combined documents hold each file once
 - the files of a document are in the order of their paths
+- a caller's order groups the files by prefix and keeps the rest as it was
 
 ## `src/schema.zig`
 

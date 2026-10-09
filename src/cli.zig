@@ -60,6 +60,8 @@ const usage_write =
     \\      --width <columns>                  where text breaks its lines (default: 80)
     \\      --pages                            markdown as a directory of pages, named by -o,
     \\                                         with an index.md and a toc.yml
+    \\      --order <prefix>                   files under this directory, or this file, come
+    \\                                         before the others; repeat for what comes next
     \\
 ;
 
@@ -183,6 +185,9 @@ pub const Write = struct {
     width: usize = 80,
     /// Whether Markdown is written as a directory of pages, which `output` then names.
     pages: bool = false,
+    /// Directories and files of the document, each coming before the next and all of them
+    /// before the files under none.
+    order: []const []const u8 = &.{},
     /// Where the text goes. Null for standard output.
     output: ?[]const u8 = null,
 };
@@ -402,6 +407,7 @@ const Arguments = struct {
 
     fn write(self: *Arguments) Failure!Write {
         var command: Write = .{};
+        var order: std.ArrayList([]const u8) = .empty;
         while (try self.option()) |flag| {
             if (is(flag, "--title")) {
                 command.title = try self.value(flag);
@@ -409,10 +415,13 @@ const Arguments = struct {
                 command.width = try self.columns(flag);
             } else if (is(flag, "--pages")) {
                 command.pages = true;
+            } else if (is(flag, "--order")) {
+                try order.append(self.arena, try self.value(flag));
             } else if (is(flag, "-o") or is(flag, "--output")) {
                 command.output = try self.value(flag);
             } else return self.unknown(flag);
         }
+        command.order = try order.toOwnedSlice(self.arena);
         try self.atMost(2, "a format and one document");
         if (self.positional.items.len == 0) return self.invalid("write needs a format: markdown or text", .{});
         const format = self.positional.items[0];
@@ -587,7 +596,7 @@ pub fn run(arena: Allocator, io: std.Io, args: []const [:0]const u8) !u8 {
             return 0;
         },
         .write => |write| {
-            const document = try take(arena, io, write.input) orelse return 1;
+            const document = try docir.ordered(arena, try take(arena, io, write.input) orelse return 1, write.order);
             if (write.pages) {
                 for (try docir.markdown.writePages(arena, write.title, document)) |page| {
                     try emit(io, try std.fs.path.join(arena, &.{ write.output.?, page.path }), page.text);
@@ -749,7 +758,9 @@ test "link and write take their documents and options" {
     try std.testing.expect(link.strict);
     try std.testing.expectEqualStrings("std", link.references[0].name);
 
-    const write = (try parse(arena.allocator(), &.{ "write", "markdown", "a.json", "--title", "Scheduler" }, &message)).write;
+    const write = (try parse(arena.allocator(), &.{ "write", "markdown", "a.json", "--title", "Scheduler", "--order", "src", "--order=include" }, &message)).write;
+    try std.testing.expectEqual(2, write.order.len);
+    try std.testing.expectEqualStrings("include", write.order[1]);
     try std.testing.expectEqualStrings("a.json", write.input.?);
     try std.testing.expectEqualStrings("Scheduler", write.title);
     try std.testing.expectEqual(Topic.all, (try parse(arena.allocator(), &.{}, &message)).help);

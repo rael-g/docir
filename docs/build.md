@@ -98,6 +98,15 @@ pages: bool = false
 Also writes the Markdown as a directory of pages, `<name>/` under [`install_subdir`](#optionsinstall_subdir),
 with an `index.md` and a `toc.yml`, for a tool that makes a site of them.
 
+### `Options.order`
+
+```zig
+order: []const []const u8 = &.{}
+```
+
+Directories and files, as the document names them, each written before the next and
+all of them before the files under none. Empty for the order of the paths.
+
 ## `StepOptions`
 
 ```zig
@@ -146,6 +155,15 @@ source_dir: ?[]const u8 = null
 
 Directory of the source tree, relative to the build root, that receives the files
 instead of one under the install prefix.
+
+### `StepOptions.order`
+
+```zig
+order: []const []const u8 = &.{}
+```
+
+Directories and files, as the document names them, each written before the next and
+all of them before the files under none. Empty for the order of the paths.
 
 ## `addDocsStep`
 

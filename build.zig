@@ -38,6 +38,9 @@ pub const Options = struct {
     /// Also writes the Markdown as a directory of pages, `<name>/` under `install_subdir`,
     /// with an `index.md` and a `toc.yml`, for a tool that makes a site of them.
     pages: bool = false,
+    /// Directories and files, as the document names them, each written before the next and
+    /// all of them before the files under none. Empty for the order of the paths.
+    order: []const []const u8 = &.{},
 };
 
 /// How the documentation of every installed artifact is produced.
@@ -53,6 +56,9 @@ pub const StepOptions = struct {
     /// Directory of the source tree, relative to the build root, that receives the files
     /// instead of one under the install prefix.
     source_dir: ?[]const u8 = null,
+    /// Directories and files, as the document names them, each written before the next and
+    /// all of them before the files under none. Empty for the order of the paths.
+    order: []const []const u8 = &.{},
 };
 
 /// Registers the top-level step run by `zig build docs`, which documents the root module of
@@ -77,6 +83,7 @@ pub fn addDocsStep(b: *std.Build, program: *std.Build.Step.Compile, options: Ste
             .excluded_dirs = options.excluded_dirs,
             .install_subdir = options.install_subdir,
             .source_dir = options.source_dir,
+            .order = options.order,
         }));
     }
     return all;
@@ -197,6 +204,7 @@ fn finish(b: *std.Build, program: *std.Build.Step.Compile, read: *std.Build.Step
     const write = b.addRunArtifact(program);
     write.addArgs(&.{ "write", "markdown" });
     write.addFileArg(linked);
+    for (options.order) |prefix| write.addArgs(&.{ "--order", prefix });
     write.addArgs(&.{ "--title", options.title orelse options.name, "-o" });
     const rendered = write.addOutputFileArg(b.fmt("{s}.md", .{options.name}));
 
@@ -205,6 +213,7 @@ fn finish(b: *std.Build, program: *std.Build.Step.Compile, read: *std.Build.Step
         const split = b.addRunArtifact(program);
         split.addArgs(&.{ "write", "markdown" });
         split.addFileArg(linked);
+        for (options.order) |prefix| split.addArgs(&.{ "--order", prefix });
         split.addArgs(&.{ "--title", options.title orelse options.name, "--pages", "-o" });
         const directory = split.addOutputDirectoryArg(options.name);
         paged = &b.addInstallDirectory(.{

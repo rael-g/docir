@@ -85,6 +85,7 @@ const managed = docir.addSourceDocs(b, program, b.path("src/csharp"), .{ .name =
 | `excluded_dirs` | Directories read for references only. |
 | `external_names` | Names declared outside the sources. |
 | `pages` | Also write Markdown as a directory of pages. |
+| `order` | Directories and files written first, in the sequence given. Defaults to the order of the paths. |
 | `install_subdir` | Directory under the prefix. Defaults to `docs`. |
 | `source_dir` | Write into the source tree instead of the prefix. |
 

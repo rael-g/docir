@@ -56,6 +56,47 @@ pub fn documentOf(arena: std.mem.Allocator, loaded: project.Project) std.mem.All
     return .{ .files = files, .symbols = symbols };
 }
 
+/// `document` with its files rearranged for a writer: those under the first of `prefixes`
+/// come first, then those under the second, and so on, and a file under none of them comes
+/// after all of those. A prefix is a directory or a whole file path, as the document names
+/// it. Within one group the files keep the order they had.
+pub fn ordered(arena: std.mem.Allocator, document: ir.Document, prefixes: []const []const u8) std.mem.Allocator.Error!ir.Document {
+    if (prefixes.len == 0) return document;
+    const Ranking = struct {
+        prefixes: []const []const u8,
+
+        fn of(self: @This(), path: []const u8) usize {
+            for (self.prefixes, 0..) |prefix, index| {
+                const dir = std.mem.trimEnd(u8, prefix, "/");
+                if (std.mem.eql(u8, path, dir)) return index;
+                if (path.len > dir.len and std.mem.startsWith(u8, path, dir) and path[dir.len] == '/') return index;
+            }
+            return self.prefixes.len;
+        }
+
+        fn fileBefore(self: @This(), a: ir.File, b: ir.File) bool {
+            return self.of(a.path) < self.of(b.path);
+        }
+
+        fn symbolBefore(self: @This(), a: ir.Symbol, b: ir.Symbol) bool {
+            return self.of(pathOf(a)) < self.of(pathOf(b));
+        }
+
+        fn pathOf(symbol: ir.Symbol) []const u8 {
+            return if (symbol.locations.len == 0) "" else symbol.locations[0].file;
+        }
+    };
+    const ranking: Ranking = .{ .prefixes = prefixes };
+    const files = try arena.dupe(ir.File, document.files);
+    const symbols = try arena.dupe(ir.Symbol, document.symbols);
+    std.mem.sort(ir.File, files, ranking, Ranking.fileBefore);
+    std.mem.sort(ir.Symbol, symbols, ranking, Ranking.symbolBefore);
+    var result = document;
+    result.files = files;
+    result.symbols = symbols;
+    return result;
+}
+
 /// The files of every one of `documents` in one document that is not linked. A file that
 /// several of them hold is taken from the first, except that it is documented when any of
 /// them documents it.
@@ -155,6 +196,27 @@ test "the files of a document are in the order of their paths" {
         try std.testing.expectEqualStrings(path, file.path);
         try std.testing.expectEqualStrings(path, symbol.locations[0].file);
     }
+}
+
+test "a caller's order groups the files by prefix and keeps the rest as it was" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const paths: []const []const u8 = &.{ "contracts/pool.h", "include/create.h", "src/apple.zig", "src/main.zig", "srcs/other.zig" };
+    const files = try arena.allocator().alloc(ir.File, paths.len);
+    const symbols = try arena.allocator().alloc(ir.Symbol, paths.len);
+    for (paths, files, symbols) |path, *file, *symbol| {
+        file.* = .{ .path = path, .language = "zig" };
+        symbol.* = .{ .id = path, .name = path, .qualified_name = path, .kind = .module, .locations = try arena.allocator().dupe(ir.Location, &.{.{ .file = path, .line = 1 }}) };
+    }
+    const document: ir.Document = .{ .files = files, .symbols = symbols };
+
+    const result = try ordered(arena.allocator(), document, &.{ "src/main.zig", "src/", "include" });
+    const expected: []const []const u8 = &.{ "src/main.zig", "src/apple.zig", "include/create.h", "contracts/pool.h", "srcs/other.zig" };
+    for (expected, result.files, result.symbols) |path, file, symbol| {
+        try std.testing.expectEqualStrings(path, file.path);
+        try std.testing.expectEqualStrings(path, symbol.name);
+    }
+    try std.testing.expectEqualStrings("contracts/pool.h", (try ordered(arena.allocator(), document, &.{})).files[0].path);
 }
 
 test {
