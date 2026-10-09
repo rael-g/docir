@@ -1,0 +1,13 @@
+{
+  "build": {
+    "content": [{ "files": ["**/*.md", "**/toc.yml"], "exclude": ["_site/**"] }],
+    "output": "_site",
+    "template": ["default", "modern"],
+    "globalMetadata": {
+      "_appTitle": "docir",
+      "_appName": "docir",
+      "_enableSearch": true,
+      "_disableContribution": true
+    }
+  }
+}

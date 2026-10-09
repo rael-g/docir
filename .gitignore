@@ -1,5 +1,8 @@
 docs/*.json
 !docs/docir.schema.json
+site/_site/
+site/reference/
+site/build/
 .zig-cache/
 zig-out/
 zig-pkg/
