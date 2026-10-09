@@ -36,7 +36,7 @@ directory and reads every source file under it. `link` takes any number of docum
 several languages end up in one with references across them.
 
 ```bash
-docir query Pool.wait
+docir query Pool.wait src
 ```
 
 ```
@@ -49,14 +49,15 @@ ke.Pool.wait
 ```
 
 `query` needs no document made beforehand: it reads and links the sources under the
-current directory, or under the directory it is given, each time it is asked. Given a
-document, or a directory of them, it answers from that instead, and `-` reads one from
-standard input. It also answers where an idea is explained, what a symbol holds and what
-there is to ask about:
+directory it is given each time it is asked. Name the directory of the project's own
+sources; with none the current directory is read, build output and fetched packages
+included. Given a document, or a directory of them, it answers from that instead, and `-`
+reads one from standard input. It also answers where an idea is explained, what a symbol
+holds and what there is to ask about:
 
 ```bash
-docir query --text "structural changes"
-docir query --members Pool src/
+docir query --text "structural changes" src
+docir query --members Pool src/pool
 docir query --list api.linked.json
 ```
 
