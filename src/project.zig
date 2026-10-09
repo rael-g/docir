@@ -30,7 +30,8 @@
 //! nothing says where their headers are looked for. A directory whose name starts with a dot
 //! is not entered, and neither is one
 //! of `Options.excluded_dirs`, and neither it nor a file is read when its name is one of
-//! `Options.excluded_names`. The parts of a C# type declared in parts are then joined
+//! `Options.excluded_names`. With `Options.follow_gitignore` the `.gitignore` of the
+//! directory adds to both: the names and the paths it lists plainly. The parts of a C# type declared in parts are then joined
 //! into one symbol, and a C++ member defined outside its class is joined to its declaration.
 //!
 //! In a directory there are no include directories to look in, so an include that is found
@@ -94,6 +95,11 @@ pub const Options = struct {
     /// Names of files and directories that are not documented, wherever they are, and that a
     /// directory read does not read or enter.
     excluded_names: []const []const u8 = &.{},
+    /// Whether a directory read also leaves out what the `.gitignore` of that directory
+    /// names plainly: a name alone is left out wherever it is, and a path is left out
+    /// under the directory. Letters between brackets are spelled out each way. A line with
+    /// any other wildcard or a negation is not followed.
+    follow_gitignore: bool = false,
 };
 
 /// The files reached from the root of the first module.
@@ -124,6 +130,8 @@ pub const Project = struct {
     macros: std.ArrayList([]const u8) = .empty,
     /// What `reference` read, in the order it was asked for.
     referenced: std.ArrayList(*const ir.Unit) = .empty,
+    /// The names the `.gitignore` of a directory read leaves out wherever they are.
+    ignored_names: std.ArrayList([]const u8) = .empty,
     /// Every file a directory read found, before any of them is read.
     walked: std.ArrayList(Walked) = .empty,
 
@@ -152,6 +160,7 @@ pub const Project = struct {
             try project.documented.append(arena, root_key);
             project.base = try std.fs.path.resolve(arena, &.{options.base});
             project.root = try project.slashed(within(project.base, root_key) orelse options.modules[0].name);
+            if (options.follow_gitignore) try project.ignore(dir, root_key);
             try project.walk(dir, root_key);
             return project;
         } else |_| {}
@@ -287,7 +296,46 @@ pub const Project = struct {
         for (self.options.excluded_names) |name| {
             if (std.mem.eql(u8, name, part)) return true;
         }
+        for (self.ignored_names.items) |name| {
+            if (std.mem.eql(u8, name, part)) return true;
+        }
         return false;
+    }
+
+    fn ignore(self: *Project, dir: std.Io.Dir, root_key: []const u8) Allocator.Error!void {
+        const listed = dir.readFileAlloc(self.io, ".gitignore", self.arena, .unlimited) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
+        var lines = std.mem.tokenizeAny(u8, listed, "\r\n");
+        while (lines.next()) |line| {
+            const written = std.mem.trim(u8, line, " \t");
+            if (written.len == 0 or written[0] == '#' or written[0] == '!') continue;
+            if (std.mem.indexOfAny(u8, written, "*?\\") != null) continue;
+            const pattern = std.mem.trim(u8, written, "/");
+            if (pattern.len == 0) continue;
+            var spellings: std.ArrayList([]const u8) = .empty;
+            try self.spell(pattern, "", &spellings);
+            for (spellings.items) |spelled| {
+                if (written[0] == '/' or std.mem.indexOfScalar(u8, spelled, '/') != null) {
+                    try self.excluded.append(self.arena, try std.fs.path.resolve(self.arena, &.{ root_key, spelled }));
+                } else try self.ignored_names.append(self.arena, spelled);
+            }
+        }
+    }
+
+    fn spell(self: *Project, pattern: []const u8, before: []const u8, out: *std.ArrayList([]const u8)) Allocator.Error!void {
+        const open_at = std.mem.indexOfScalar(u8, pattern, '[') orelse {
+            if (std.mem.indexOfScalar(u8, pattern, ']') == null) try out.append(self.arena, try std.mem.concat(self.arena, u8, &.{ before, pattern }));
+            return;
+        };
+        const close_at = std.mem.indexOfScalarPos(u8, pattern, open_at, ']') orelse return;
+        const letters = pattern[open_at + 1 .. close_at];
+        if (letters.len == 0 or letters[0] == '!' or letters[0] == '^' or std.mem.indexOfScalar(u8, letters, '-') != null) return;
+        for (letters) |letter| {
+            const so_far = try std.mem.concat(self.arena, u8, &.{ before, pattern[0..open_at], &.{letter} });
+            try self.spell(pattern[close_at + 1 ..], so_far, out);
+        }
     }
 
     fn follow(self: *Project, importer_key: []const u8, importer_path: []const u8, module: usize, import: ir.Import, postpone: bool) Allocator.Error!?[]const u8 {
@@ -628,4 +676,31 @@ test "a file or a directory with an excluded name is left out of a directory rea
 
     try std.testing.expectEqual(1, project.units.items.len);
     try std.testing.expectEqualStrings("lib/a/src/main.zig", project.units.items[0].file.path);
+}
+
+test "a directory read follows the plain lines of its gitignore when asked to" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try writeFile(tmp.dir, "lib/.gitignore", "# output\n[Bb]uild/\n/vendor\nsrc/gen/\n*.tmp.zig\n!src/main.zig\n[a-z]rc\n\n");
+    try writeFile(tmp.dir, "lib/build/out.zig", "pub fn out() void {}\n");
+    try writeFile(tmp.dir, "lib/src/build/deep.zig", "pub fn deep() void {}\n");
+    try writeFile(tmp.dir, "lib/vendor/dep.zig", "pub fn dep() void {}\n");
+    try writeFile(tmp.dir, "lib/src/vendor/kept.zig", "pub fn kept() void {}\n");
+    try writeFile(tmp.dir, "lib/src/gen/made.zig", "pub fn made() void {}\n");
+    try writeFile(tmp.dir, "lib/src/main.zig", "pub fn run() void {}\n");
+    try writeFile(tmp.dir, "lib/src/a.tmp.zig", "pub fn tmp() void {}\n");
+
+    const base = try tmp.dir.realPathFileAlloc(std.testing.io, ".", arena.allocator());
+    const root = try std.fs.path.join(arena.allocator(), &.{ base, "lib" });
+    const followed = try Project.open(arena.allocator(), std.testing.io, .{ .modules = &.{.{ .name = "lib", .path = root }}, .base = base, .follow_gitignore = true });
+    try std.testing.expectEqual(3, followed.units.items.len);
+    try std.testing.expectEqualStrings("lib/src/a.tmp.zig", followed.units.items[0].file.path);
+    try std.testing.expectEqualStrings("lib/src/main.zig", followed.units.items[1].file.path);
+    try std.testing.expectEqualStrings("lib/src/vendor/kept.zig", followed.units.items[2].file.path);
+
+    const all = try Project.open(arena.allocator(), std.testing.io, .{ .modules = &.{.{ .name = "lib", .path = root }}, .base = base });
+    try std.testing.expectEqual(7, all.units.items.len);
 }

@@ -50,8 +50,8 @@ ke.Pool.wait
 
 `query` needs no document made beforehand: it reads and links the sources under the
 directory it is given each time it is asked. Name the directory of the project's own
-sources; with none the current directory is read, build output and fetched packages
-included. Given a document, or a directory of them, it answers from that instead, and `-`
+sources; with none the current directory is read, without what its `.gitignore` names
+plainly. Given a document, or a directory of them, it answers from that instead, and `-`
 reads one from standard input. It also answers where an idea is explained, what a symbol
 holds and what there is to ask about:
 

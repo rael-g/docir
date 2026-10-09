@@ -81,6 +81,8 @@ const usage_query =
     \\                                         source file, is read and linked on the spot
     \\                                         with no document the current directory is
     \\                                         taken, and - reads one from standard input
+    \\                                         what the .gitignore of a directory names
+    \\                                         plainly is left out of the sources read
     \\      --excluded-name <name>             leave out of the sources read on the spot every
     \\                                         file and directory of that name
     \\      --full                             print every symbol in full, however many
@@ -799,6 +801,7 @@ fn sources(arena: Allocator, io: std.Io, root: []const u8, excluded_names: []con
         .modules = &.{.{ .name = std.fs.path.stem(root), .path = try std.fs.path.resolve(arena, &.{ here, root }) }},
         .base = here,
         .excluded_names = excluded_names,
+        .follow_gitignore = true,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {

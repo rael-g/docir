@@ -22,10 +22,11 @@ Give it the directory that holds the project's own sources, `src` in most projec
 narrower one, or one file, to read less and answer faster: `docir query <name> src/pool`.
 Every Zig, C, C++ and C# file under it is read.
 
-With no directory the current one is read, and from the root of a project that takes in
-whatever else is there: build output, fetched packages, vendored code. Only directories
-whose name starts with a dot are skipped. Prefer naming the source directory. To leave a
-name out wherever it is, pass `--excluded-name <name>`, once for each.
+With no directory the current one is read. What the `.gitignore` of the directory read
+names plainly is left out, and so is every directory whose name starts with a dot, so
+build output and fetched packages are usually skipped; a line with `*` is not followed.
+Vendored code that is committed is still read: name the source directory, or leave a name
+out wherever it is with `--excluded-name <name>`, once for each.
 
 A name is matched in full first, then as the end of a qualified name (`Pool.wait` finds
 `ke.Pool.wait`), then as a piece of one without regard to case. When no symbol has the
