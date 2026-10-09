@@ -229,7 +229,7 @@ pub const Symbol = struct {
     members: []const Symbol = &.{},
 
     /// Whether the symbol, or a symbol inside it, carries documentation of any kind or an
-    /// example. A writer for people leaves out the symbols for which this is false.
+    /// example.
     pub fn hasDocumentation(symbol: Symbol) bool {
         if (!symbol.doc.isEmpty() or !symbol.returns.isEmpty() or symbol.examples.len != 0) return true;
         for (symbol.params) |param| {
@@ -245,6 +245,23 @@ pub const Symbol = struct {
             if (member.hasDocumentation()) return true;
         }
         return false;
+    }
+
+    /// Whether a writer for people lists the symbol, given that it lists what the symbol is
+    /// declared in. A declaration is listed when anyone may use it, or a derived type may,
+    /// whether it is documented or not, and otherwise only when `hasDocumentation`. A
+    /// namespace or a file is listed for what it says of itself or for a member that is.
+    pub fn isListed(symbol: Symbol) bool {
+        switch (symbol.kind) {
+            .namespace, .module => {
+                if (!symbol.doc.isEmpty() or symbol.verified.len != 0) return true;
+                for (symbol.members) |member| {
+                    if (member.isListed()) return true;
+                }
+                return false;
+            },
+            else => return symbol.visibility == .public or symbol.visibility == .protected or symbol.hasDocumentation(),
+        }
     }
 };
 
@@ -488,4 +505,30 @@ test "a document written in another format version is refused" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectError(error.UnsupportedFormat, readJson(arena.allocator(), "{\"format\": 1}"));
+}
+
+test "a symbol is listed when it is public or documented, and a namespace when a member is" {
+    const said: Text = .{ .blocks = &.{.{ .paragraph = &.{.{ .text = "Said." }} }} };
+    const bare: Symbol = .{ .id = "a", .name = "a", .qualified_name = "a", .kind = .function };
+    var hidden = bare;
+    hidden.visibility = .private;
+    var inherited = bare;
+    inherited.visibility = .protected;
+    var internal = bare;
+    internal.visibility = .internal;
+    var explained = hidden;
+    explained.doc = said;
+    try std.testing.expect(bare.isListed());
+    try std.testing.expect(inherited.isListed());
+    try std.testing.expect(!hidden.isListed());
+    try std.testing.expect(!internal.isListed());
+    try std.testing.expect(explained.isListed());
+
+    var space: Symbol = .{ .id = "n", .name = "n", .qualified_name = "n", .kind = .namespace, .members = &.{hidden} };
+    try std.testing.expect(!space.isListed());
+    space.members = &.{ hidden, explained };
+    try std.testing.expect(space.isListed());
+    space.members = &.{};
+    space.doc = said;
+    try std.testing.expect(space.isListed());
 }

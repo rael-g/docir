@@ -7,7 +7,7 @@
 //! inside a line are set between grave accents, and a link is followed by its address
 //! between parentheses.
 //!
-//! `write` prints every symbol of the documented files that `ir.Symbol.hasDocumentation`,
+//! `write` prints every symbol of the documented files for which `ir.Symbol.isListed`,
 //! which is what the Markdown writer gives a section to. `writeSymbol` prints one symbol in
 //! full, whether it is documented or not, and closes it with one line per member, so that
 //! what is inside it can be asked for next.
@@ -29,7 +29,7 @@ pub const Options = struct {
 
 const indent = "    ";
 
-/// Prints `title`, then every documented symbol of the documented files of `document`.
+/// Prints `title`, then every listed symbol of the documented files of `document`.
 pub fn write(arena: Allocator, writer: *Writer, title: []const u8, document: ir.Document, options: Options) Error!void {
     const printer: Printer = .{ .arena = arena, .writer = writer, .width = options.width };
     try writer.print("{s}\n", .{title});
@@ -37,7 +37,7 @@ pub fn write(arena: Allocator, writer: *Writer, title: []const u8, document: ir.
     try writer.writeByte('\n');
     const count = @min(document.files.len, document.symbols.len);
     for (document.files[0..count], document.symbols[0..count]) |file, root| {
-        if (!file.documented or !root.hasDocumentation()) continue;
+        if (!file.documented or !root.isListed()) continue;
         if (!root.doc.isEmpty()) {
             try writer.print("\n{s}\n", .{root.qualified_name});
             try printer.blocks(root.doc.blocks, indent);
@@ -70,7 +70,7 @@ const Printer = struct {
     width: usize,
 
     fn all(self: Printer, found: ir.Symbol) Error!void {
-        if (!found.hasDocumentation()) return;
+        if (!found.isListed()) return;
         const transparent = found.kind == .namespace and found.doc.isEmpty();
         if (!transparent) {
             try self.writer.writeByte('\n');
@@ -306,7 +306,7 @@ test "one symbol is printed in full, with a line for each member" {
     , out.written());
 }
 
-test "a document is printed with its documented symbols only" {
+test "a document is printed with its public and its documented symbols" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     var out: Writer.Allocating = .init(arena.allocator());
@@ -331,6 +331,11 @@ test "a document is printed with its documented symbols only" {
         \\
         \\    Returns:
         \\      False on failure.
+        \\
+        \\pool.count
+        \\    field, public
+        \\
+        \\    int count
         \\
     , out.written());
 }

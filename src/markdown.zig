@@ -1,8 +1,9 @@
 //! Writes a document as one plain Markdown file.
 //!
-//! Only the symbols of documented files are written, and of those only the ones with
-//! something to say. A symbol gets a section when it carries documentation of any kind or
-//! an example, or when one of its members does. With a single file the sections are
+//! Only the symbols of documented files are written, and of those the ones for which
+//! `ir.Symbol.isListed`: a declaration anyone may use gets a section whether it is
+//! documented or not, with its signature alone when it is not, and any other gets one only
+//! when it or one of its members carries documentation. With a single file the sections are
 //! second-level; with several, each file gets a second-level section named after its path
 //! and its symbols move one level down. A member is headed by its qualified name, so a
 //! heading is unambiguous when read out of context. A namespace without documentation of its
@@ -164,7 +165,7 @@ fn rootsOf(arena: Allocator, document: ir.Document) Allocator.Error![]const Root
     var spaces: std.ArrayList(Space) = .empty;
     for (document.symbols) |symbol| {
         const file = fileOf(document, symbol) orelse continue;
-        if (!file.documented or !hasContent(symbol)) continue;
+        if (!file.documented or !symbol.isListed()) continue;
         if (isDissolved(symbol)) {
             try gather(arena, &spaces, symbol.members, file.language);
         } else try roots.append(arena, .{ .symbol = symbol, .language = file.language });
@@ -205,17 +206,17 @@ const Space = struct {
 fn isDissolved(root: ir.Symbol) bool {
     if (!root.doc.isEmpty() or root.verified.len != 0) return false;
     for (root.members) |member| {
-        if (member.kind != .namespace and member.hasDocumentation()) return false;
+        if (member.kind != .namespace and member.isListed()) return false;
     }
     return true;
 }
 
 fn gather(arena: Allocator, spaces: *std.ArrayList(Space), list: []const ir.Symbol, language: []const u8) Allocator.Error!void {
     for (list) |symbol| {
-        if (symbol.kind != .namespace or !symbol.hasDocumentation()) continue;
+        if (symbol.kind != .namespace or !symbol.isListed()) continue;
         var direct = false;
         for (symbol.members) |member| {
-            if (member.kind != .namespace and member.hasDocumentation()) direct = true;
+            if (member.kind != .namespace and member.isListed()) direct = true;
         }
         if (direct or !symbol.doc.isEmpty()) {
             const space = for (spaces.items) |*known| {
@@ -240,14 +241,6 @@ fn fileOf(document: ir.Document, symbol: ir.Symbol) ?ir.File {
         if (std.mem.eql(u8, file.path, symbol.locations[0].file)) return file;
     }
     return null;
-}
-
-fn hasContent(root: ir.Symbol) bool {
-    if (!root.doc.isEmpty() or root.verified.len != 0) return true;
-    for (root.members) |member| {
-        if (member.hasDocumentation()) return true;
-    }
-    return false;
 }
 
 const Renderer = struct {
@@ -320,7 +313,7 @@ const Renderer = struct {
     }
 
     fn section(self: *Renderer, language: []const u8, symbol: ir.Symbol, level: usize) Error!void {
-        if (!symbol.hasDocumentation()) return;
+        if (!symbol.isListed()) return;
         if (self.paged.get(symbol.id)) |own| {
             if (own != self.current) return;
         }
@@ -571,7 +564,8 @@ test "a single file is written flat, with an example and its verified sentences 
         .files = &.{.{ .path = "a.zig", .language = "zig" }},
         .symbols = &.{module("a.zig", "zig", words("How it works."), &.{
             .{ .id = "zig:a.zig#run", .name = "run", .qualified_name = "run", .kind = .function, .signature = "fn run() void", .doc = words("Runs."), .examples = &.{.{ .language = "zig", .code = "run();" }} },
-            .{ .id = "zig:a.zig#hidden", .name = "hidden", .qualified_name = "hidden", .kind = .function, .signature = "fn hidden() void" },
+            .{ .id = "zig:a.zig#hidden", .name = "hidden", .qualified_name = "hidden", .kind = .function, .visibility = .private, .signature = "fn hidden() void" },
+            .{ .id = "zig:a.zig#open", .name = "open", .qualified_name = "open", .kind = .function, .signature = "pub fn open() void" },
         }, &.{ "it runs", "it stops" })},
     });
     try std.testing.expectEqualStrings(
@@ -591,6 +585,12 @@ test "a single file is written flat, with an example and its verified sentences 
         \\
         \\```zig
         \\run();
+        \\```
+        \\
+        \\## `open`
+        \\
+        \\```zig
+        \\pub fn open() void
         \\```
         \\
         \\## Verified behaviour
