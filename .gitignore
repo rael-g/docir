@@ -7,3 +7,4 @@ site/samples/
 .zig-cache/
 zig-out/
 zig-pkg/
+CLAUDE.md
