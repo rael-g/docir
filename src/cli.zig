@@ -77,6 +77,12 @@ const usage_query =
     \\  docir query --list [document...]       print the files and namespaces of a document
     \\                                         a document may be a directory, for every
     \\                                         .json file in it, and several are read as one
+    \\                                         a directory with no document in it, or a
+    \\                                         source file, is read and linked on the spot
+    \\                                         with no document the current directory is
+    \\                                         taken, and - reads one from standard input
+    \\      --excluded-name <name>             leave out of the sources read on the spot every
+    \\                                         file and directory of that name
     \\      --full                             print every symbol in full, however many
     \\      --limit-full <count>               print one line a symbol when there are more
     \\                                         than this many (default: 5)
@@ -211,9 +217,11 @@ pub const Write = struct {
 pub const Query = struct {
     /// The name asked for.
     name: []const u8,
-    /// The documents to look in, each a file or a directory of them. None to read one from
-    /// standard input.
+    /// What to look in: documents, directories of them, source files and directories of
+    /// sources, and "-" for a document on standard input. None for the current directory.
     inputs: []const []const u8 = &.{},
+    /// Names of files and directories left out of the sources that are read on the spot.
+    excluded_names: []const []const u8 = &.{},
     /// Whether the symbols found are printed as JSON.
     json: bool = false,
     /// Whether the words are looked for in the documentation without trying the names.
@@ -467,11 +475,14 @@ const Arguments = struct {
 
     fn query(self: *Arguments) Failure!Query {
         var command: Query = .{ .name = "" };
+        var excluded_names: std.ArrayList([]const u8) = .empty;
         while (try self.option()) |flag| {
             if (is(flag, "--json")) {
                 command.json = true;
             } else if (is(flag, "--text")) {
                 command.text = true;
+            } else if (is(flag, "--excluded-name")) {
+                try excluded_names.append(self.arena, try self.value(flag));
             } else if (is(flag, "--members")) {
                 command.members = true;
             } else if (is(flag, "--list")) {
@@ -486,6 +497,7 @@ const Arguments = struct {
                 command.output = try self.value(flag);
             } else return self.unknown(flag);
         }
+        command.excluded_names = try excluded_names.toOwnedSlice(self.arena);
         if (command.list) {
             if (command.text or command.members) return self.invalid("--list asks for no name, so it goes with neither --text nor --members", .{});
             command.inputs = self.positional.items;
@@ -663,7 +675,7 @@ pub fn run(arena: Allocator, io: std.Io, args: []const [:0]const u8) !u8 {
             return 0;
         },
         .query => |query| {
-            const document = try takeAll(arena, io, query.inputs) orelse return 1;
+            const document = try takeAll(arena, io, query.inputs, query.excluded_names) orelse return 1;
             var text: std.Io.Writer.Allocating = .init(arena);
             if (query.list) {
                 const roots = try docir.query.roots(arena, document);
@@ -743,12 +755,18 @@ fn take(arena: Allocator, io: std.Io, path: ?[]const u8) !?docir.ir.Document {
     };
 }
 
-fn takeAll(arena: Allocator, io: std.Io, inputs: []const []const u8) !?docir.ir.Document {
-    if (inputs.len == 0) return take(arena, io, null);
-    var paths: std.ArrayList([]const u8) = .empty;
-    for (inputs) |input| {
+fn takeAll(arena: Allocator, io: std.Io, inputs: []const []const u8, excluded_names: []const []const u8) !?docir.ir.Document {
+    var documents: std.ArrayList(docir.ir.Document) = .empty;
+    const given: []const []const u8 = if (inputs.len == 0) &.{"."} else inputs;
+    for (given) |input| {
+        if (is(input, "-")) {
+            try documents.append(arena, try take(arena, io, null) orelse return null);
+            continue;
+        }
         var dir = std.Io.Dir.cwd().openDir(io, input, .{ .iterate = true }) catch {
-            try paths.append(arena, input);
+            if (std.mem.endsWith(u8, input, ".json")) {
+                try documents.append(arena, try take(arena, io, input) orelse return null);
+            } else try documents.append(arena, try sources(arena, io, input, excluded_names) orelse return null);
             continue;
         };
         defer dir.close(io);
@@ -763,16 +781,32 @@ fn takeAll(arena: Allocator, io: std.Io, inputs: []const []const u8) !?docir.ir.
                 return std.mem.lessThan(u8, a, b);
             }
         }.before);
-        try paths.appendSlice(arena, inside.items);
+        var held: usize = 0;
+        for (inside.items) |path| {
+            const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch continue;
+            try documents.append(arena, docir.ir.readJson(arena, bytes) catch continue);
+            held += 1;
+        }
+        if (held == 0) try documents.append(arena, try sources(arena, io, input, excluded_names) orelse return null);
     }
-    if (paths.items.len == 0) {
-        try complain(arena, io, "docir: no document was found in what query was given\n", .{});
-        return null;
-    }
-    if (paths.items.len == 1) return take(arena, io, paths.items[0]);
-    var documents: std.ArrayList(docir.ir.Document) = .empty;
-    for (paths.items) |path| try documents.append(arena, try take(arena, io, path) orelse return null);
+    if (documents.items.len == 1) return documents.items[0];
     return try docir.combine(arena, documents.items);
+}
+
+fn sources(arena: Allocator, io: std.Io, root: []const u8, excluded_names: []const []const u8) !?docir.ir.Document {
+    const here = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", arena);
+    const unlinked = docir.read(arena, io, .{
+        .modules = &.{.{ .name = std.fs.path.stem(root), .path = try std.fs.path.resolve(arena, &.{ here, root }) }},
+        .base = here,
+        .excluded_names = excluded_names,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            try complain(arena, io, "docir: cannot read {s}: {t}\n", .{ root, err });
+            return null;
+        },
+    };
+    return (try docir.resolve(arena, io, unlinked, &.{}, &.{})).document;
 }
 
 fn emitDocument(arena: Allocator, io: std.Io, path: ?[]const u8, document: docir.ir.Document) !void {
@@ -914,6 +948,10 @@ test "query takes a name and any number of documents, or lists with no name" {
     try std.testing.expect(asked.text);
     try std.testing.expectEqual(2, asked.limit_full.?);
     try std.testing.expectEqual(null, (try parse(arena.allocator(), &.{ "query", "Pool", "--full" }, &message)).query.limit_full);
+    const direct = (try parse(arena.allocator(), &.{ "query", "Pool", "--excluded-name", "vendor", "--excluded-name=build.zig" }, &message)).query;
+    try std.testing.expectEqual(0, direct.inputs.len);
+    try std.testing.expectEqual(2, direct.excluded_names.len);
+    try std.testing.expectEqualStrings("build.zig", direct.excluded_names[1]);
     const listed = (try parse(arena.allocator(), &.{ "query", "--list", "docs" }, &message)).query;
     try std.testing.expect(listed.list);
     try std.testing.expectEqual(1, listed.inputs.len);

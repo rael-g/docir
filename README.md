@@ -36,7 +36,7 @@ directory and reads every source file under it. `link` takes any number of docum
 several languages end up in one with references across them.
 
 ```bash
-docir query Pool.wait api.linked.json
+docir query Pool.wait
 ```
 
 ```
@@ -48,13 +48,16 @@ ke.Pool.wait
     Blocks until `task` finishes.
 ```
 
-`query` also answers where an idea is explained, what a symbol holds and what a document
-holds, over one document or several:
+`query` needs no document made beforehand: it reads and links the sources under the
+current directory, or under the directory it is given, each time it is asked. Given a
+document, or a directory of them, it answers from that instead, and `-` reads one from
+standard input. It also answers where an idea is explained, what a symbol holds and what
+there is to ask about:
 
 ```bash
-docir query --text "structural changes" api.linked.json
-docir query --members Pool api.linked.json
-docir query --list docs/
+docir query --text "structural changes"
+docir query --members Pool src/
+docir query --list api.linked.json
 ```
 
 `docir help` lists every option.
