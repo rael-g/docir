@@ -1,8 +1,11 @@
 - name: Reference
   href: reference/
+  homepage: reference/index.md
 - name: Build
   href: build/
+  homepage: build/index.md
 - name: Samples
   href: samples/
+  homepage: samples/index.md
 - name: GitHub
   href: https://github.com/rael-g/docir

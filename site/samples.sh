@@ -48,5 +48,5 @@ for index in $(seq 0 $((count - 1))); do
   printf -- '- name: License\n  href: license.md\n' >> "$pages/toc.yml"
 
   printf '| [%s](%s/index.md) | %s | [%s](%s/license.md) |\n' "$title" "$name" "$(field language)" "$(field license)" "$name" >> "$out/index.md"
-  printf -- '- name: "%s"\n  href: %s/\n' "$title" "$name" >> "$out/toc.yml"
+  printf -- '- name: "%s"\n  href: %s/\n  homepage: %s/index.md\n' "$title" "$name" "$name" >> "$out/toc.yml"
 done
