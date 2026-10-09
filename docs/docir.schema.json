@@ -486,6 +486,9 @@
         },
         "target": {
           "type": "string"
+        },
+        "label": {
+          "type": "string"
         }
       },
       "required": [

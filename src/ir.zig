@@ -347,6 +347,9 @@ pub const Ref = struct {
     text: []const u8,
     /// Identifier of the symbol. Empty when the name was not resolved.
     target: []const u8 = "",
+    /// The words the author gave the mention to be read by, in place of the name. Empty
+    /// when the name itself is what is read.
+    label: []const u8 = "",
 };
 
 /// Text and the address it leads to.
@@ -405,7 +408,7 @@ fn plainRow(arena: std.mem.Allocator, out: *std.ArrayList(u8), cells: []const []
 fn plainInlines(arena: std.mem.Allocator, out: *std.ArrayList(u8), inlines: []const Inline) std.mem.Allocator.Error!void {
     for (inlines) |piece| switch (piece) {
         .text, .code, .param => |characters| try out.appendSlice(arena, characters),
-        .ref => |ref| try out.appendSlice(arena, ref.text),
+        .ref => |ref| try out.appendSlice(arena, if (ref.label.len != 0) ref.label else ref.text),
         .emphasis, .strong => |content| try plainInlines(arena, out, content),
         .link, .image => |link| try plainInlines(arena, out, link.content),
         .line_break => try out.append(arena, '\n'),

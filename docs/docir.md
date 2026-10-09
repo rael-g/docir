@@ -1041,6 +1041,15 @@ target: []const u8 = ""
 
 Identifier of the symbol. Empty when the name was not resolved.
 
+#### `Ref.label`
+
+```zig
+label: []const u8 = ""
+```
+
+The words the author gave the mention to be read by, in place of the name. Empty
+when the name itself is what is read.
+
 ### `Link`
 
 ```zig
@@ -1221,7 +1230,8 @@ declaration before it and not the one after.
 Inside a comment, `@brief`, `@param`, `@return` and their backslash forms are understood,
 at the start of a line or after other text on it. `@note`, `@warning` and the like open
 an [`ir.Note`](#note) that runs to the next blank line. `@file` marks the comment as being about
-the file. `@c` marks the next word as code, `@p` and `@a` as a parameter and `@ref` as a
+the file. A Markdown link whose address is `@ref` and a name is a mention of that name
+read by the words of the link. `@c` marks the next word as code, `@p` and `@a` as a parameter and `@ref` as a
 mention of a symbol. The rest of the text is Markdown, as Doxygen accepts it, read by
 `markdown_text`.
 
@@ -1341,6 +1351,7 @@ another. [`block`](#shapeblock) says whether it is a `/** */` comment.
 - parameters, the value returned and notes are taken out of the text
 - lines of comment are one comment, and one that names the file is about the file
 - the word after an inline command is code, a parameter or a mention
+- a reference keeps the words it is given, and may stand on the line after its command
 
 ## `src/c_source.zig`
 
@@ -1542,7 +1553,8 @@ names when it has one.
 Inside a part, `<para>` is a paragraph, and so is text set apart by an empty line.
 `<code>` is a block of code kept as written, `<list>` a list with one item per `<item>`,
 numbered when its `type=` is "number", and a `<term>` is joined to its `<description>` by
-a colon. In a line, `<see>` and `<seealso>` with a `cref=` mention a symbol, with a
+a colon. In a line, `<see>` and `<seealso>` with a `cref=` mention a symbol, by the words
+the element holds when it holds any, with a
 `langword=` are code and with an `href=` are a link, `<paramref>` mentions a parameter,
 `<typeparamref>` and `<c>` are code, `<b>` and `<strong>` stress more than `<i>` and
 `<em>`, and `<br>` ends a line. An element not listed here is read for what it holds.
@@ -2098,7 +2110,8 @@ when it is dotted and its first part is unknown, since it is then a file name or
 from outside the sources, and when a part names something whose members are not known,
 such as an import that was not followed. Every other mention is a [`Problem`](#problem) and stays a
 mention without a target, and so is a documented parameter that the signature does not
-have. A word of the language includes the names its own library is best known by, such
+have. A mention that carries a label becomes that label as plain words where one without
+would become code. A word of the language includes the names its own library is best known by, such
 as the fixed-width integers of C and the common types of the C# base library, and a name
 given in [`Options.external`](#optionsexternal) is taken the same way. Problems are only raised for documented files.
 

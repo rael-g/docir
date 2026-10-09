@@ -34,7 +34,8 @@
 //! from outside the sources, and when a part names something whose members are not known,
 //! such as an import that was not followed. Every other mention is a `Problem` and stays a
 //! mention without a target, and so is a documented parameter that the signature does not
-//! have. A word of the language includes the names its own library is best known by, such
+//! have. A mention that carries a label becomes that label as plain words where one without
+//! would become code. A word of the language includes the names its own library is best known by, such
 //! as the fixed-width integers of C and the common types of the C# base library, and a name
 //! given in `Options.external` is taken the same way. Problems are only raised for documented files.
 //!
@@ -431,9 +432,9 @@ const Linker = struct {
                     continue;
                 }
                 switch (try self.cite(ref.text, owner)) {
-                    .linked => |target| piece.* = .{ .ref = .{ .text = ref.text, .target = try self.aim(target.symbol.id) } },
+                    .linked => |target| piece.* = .{ .ref = .{ .text = ref.text, .target = try self.aim(target.symbol.id), .label = ref.label } },
                     .parameter => piece.* = .{ .param = ref.text },
-                    .accepted => piece.* = .{ .code = ref.text },
+                    .accepted => piece.* = if (ref.label.len != 0) .{ .text = ref.label } else .{ .code = ref.text },
                     .unknown => {
                         var reported = false;
                         for (self.problems.items) |problem| {

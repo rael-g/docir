@@ -7,7 +7,8 @@
 //! Inside a comment, `@brief`, `@param`, `@return` and their backslash forms are understood,
 //! at the start of a line or after other text on it. `@note`, `@warning` and the like open
 //! an `ir.Note` that runs to the next blank line. `@file` marks the comment as being about
-//! the file. `@c` marks the next word as code, `@p` and `@a` as a parameter and `@ref` as a
+//! the file. A Markdown link whose address is `@ref` and a name is a mention of that name
+//! read by the words of the link. `@c` marks the next word as code, `@p` and `@a` as a parameter and `@ref` as a
 //! mention of a symbol. The rest of the text is Markdown, as Doxygen accepts it, read by
 //! `markdown_text`.
 //!
@@ -90,6 +91,7 @@ const CommentBuilder = struct {
     returns: std.ArrayList(u8) = .empty,
     params: std.ArrayList(ParamBuilder) = .empty,
     marked: std.StringHashMapUnmanaged(Mention) = .empty,
+    carried: ?Mention = null,
     target: Target = .text,
     is_file: bool = false,
 
@@ -164,22 +166,22 @@ const CommentBuilder = struct {
 
     fn appendMarked(self: *CommentBuilder, buffer: *std.ArrayList(u8), content: []const u8) Allocator.Error!void {
         var at: usize = 0;
+        if (self.carried) |mention| {
+            self.carried = null;
+            at = try self.mark(buffer, content, 0, mention) orelse 0;
+        }
         while (at < content.len) {
             if (content[at] == '@' or content[at] == '\\') {
                 if (commandOf(content[at..])) |command| {
                     const word_start = at + 1 + command.len + 1;
                     if (inline_commands.get(command)) |mention| {
-                        if (word_start < content.len and content[word_start - 1] == ' ') {
-                            var word_end = word_start;
-                            while (word_end < content.len and !std.ascii.isWhitespace(content[word_end])) word_end += 1;
-                            while (word_end > word_start and std.mem.indexOfScalar(u8, ".,;:)", content[word_end - 1]) != null) word_end -= 1;
-                            if (word_end != word_start) {
-                                const word = content[word_start..word_end];
-                                try self.marked.put(self.arena, word, mention);
-                                try buffer.append(self.arena, '`');
-                                try buffer.appendSlice(self.arena, word);
-                                try buffer.append(self.arena, '`');
-                                at = word_end;
+                        if (word_start - 1 >= content.len) {
+                            self.carried = mention;
+                            return;
+                        }
+                        if (content[word_start - 1] == ' ') {
+                            if (try self.mark(buffer, content, word_start, mention)) |after| {
+                                at = after;
                                 continue;
                             }
                         }
@@ -189,6 +191,19 @@ const CommentBuilder = struct {
             try buffer.append(self.arena, content[at]);
             at += 1;
         }
+    }
+
+    fn mark(self: *CommentBuilder, buffer: *std.ArrayList(u8), content: []const u8, word_start: usize, mention: Mention) Allocator.Error!?usize {
+        var word_end = word_start;
+        while (word_end < content.len and !std.ascii.isWhitespace(content[word_end])) word_end += 1;
+        while (word_end > word_start and std.mem.indexOfScalar(u8, ".,;:)", content[word_end - 1]) != null) word_end -= 1;
+        if (word_end == word_start) return null;
+        const word = content[word_start..word_end];
+        try self.marked.put(self.arena, word, mention);
+        try buffer.append(self.arena, '`');
+        try buffer.appendSlice(self.arena, word);
+        try buffer.append(self.arena, '`');
+        return word_end;
     }
 
     fn read(self: *CommentBuilder, source: []const u8) Allocator.Error![]const ir.Block {
@@ -233,7 +248,14 @@ const CommentBuilder = struct {
             },
             .emphasis => |content| piece.* = .{ .emphasis = try self.inlines(content) },
             .strong => |content| piece.* = .{ .strong = try self.inlines(content) },
-            .link => |link| piece.* = .{ .link = .{ .url = link.url, .content = try self.inlines(link.content) } },
+            .link => |link| {
+                const named = std.mem.trim(u8, link.url, "`");
+                const mentions = named.len + 2 == link.url.len and self.marked.get(named) != null and self.marked.get(named).? == .symbol;
+                piece.* = if (mentions)
+                    .{ .ref = .{ .text = named, .label = try ir.plainText(self.arena, .{ .blocks = &.{.{ .paragraph = link.content }} }) } }
+                else
+                    .{ .link = .{ .url = link.url, .content = try self.inlines(link.content) } };
+            },
             else => {},
         };
         return out;
@@ -374,4 +396,15 @@ test "the word after an inline command is code, a parameter or a mention" {
         .{ .ref = .{ .text = "shrink" } },
         .{ .text = "." },
     }), comment.blocks[0].paragraph);
+}
+
+test "a reference keeps the words it is given, and may stand on the line after its command" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const comment = try parse(arena.allocator(), "/**\n * Fails with an [error](@ref error_handling), as @ref\n * GLFW_NOT_INITIALIZED does.\n */", true);
+    const line = comment.blocks[0].paragraph;
+    try std.testing.expectEqualStrings("error_handling", line[1].ref.text);
+    try std.testing.expectEqualStrings("error", line[1].ref.label);
+    try std.testing.expectEqualStrings("GLFW_NOT_INITIALIZED", line[3].ref.text);
+    try std.testing.expectEqualStrings("", line[3].ref.label);
 }

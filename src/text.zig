@@ -233,7 +233,7 @@ const Printer = struct {
         for (list) |piece| switch (piece) {
             .text => |characters| for (characters) |ch| try out.append(self.arena, if (ch == '\n') ' ' else ch),
             .code, .param => |characters| try out.print(self.arena, "`{s}`", .{characters}),
-            .ref => |ref| try out.print(self.arena, "`{s}`", .{ref.text}),
+            .ref => |ref| if (ref.label.len != 0) try out.appendSlice(self.arena, ref.label) else try out.print(self.arena, "`{s}`", .{ref.text}),
             .emphasis, .strong => |content| try out.appendSlice(self.arena, try self.plain(content)),
             .link => |link| try out.print(self.arena, "{s} ({s})", .{ try self.plain(link.content), link.url }),
             .image => |image| try out.print(self.arena, "{s} ({s})", .{ try self.plain(image.content), image.url }),

@@ -492,10 +492,11 @@ const Renderer = struct {
                 try out.append(self.arena, ch);
             },
             .code, .param => |characters| try out.appendSlice(self.arena, try self.code(characters)),
-            .ref => |ref| if (try self.linkTo(ref.target)) |anchor| {
-                try out.print(self.arena, "[{s}]({s})", .{ try self.code(ref.text), anchor });
-            } else {
-                try out.appendSlice(self.arena, try self.code(ref.text));
+            .ref => |ref| {
+                const shown = if (ref.label.len != 0) try self.inlines(&.{.{ .text = ref.label }}) else try self.code(ref.text);
+                if (try self.linkTo(ref.target)) |anchor| {
+                    try out.print(self.arena, "[{s}]({s})", .{ shown, anchor });
+                } else try out.appendSlice(self.arena, shown);
             },
             .emphasis => |content| try out.print(self.arena, "*{s}*", .{try self.inlines(content)}),
             .strong => |content| try out.print(self.arena, "**{s}**", .{try self.inlines(content)}),

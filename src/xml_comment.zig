@@ -13,7 +13,8 @@
 //! Inside a part, `<para>` is a paragraph, and so is text set apart by an empty line.
 //! `<code>` is a block of code kept as written, `<list>` a list with one item per `<item>`,
 //! numbered when its `type=` is "number", and a `<term>` is joined to its `<description>` by
-//! a colon. In a line, `<see>` and `<seealso>` with a `cref=` mention a symbol, with a
+//! a colon. In a line, `<see>` and `<seealso>` with a `cref=` mention a symbol, by the words
+//! the element holds when it holds any, with a
 //! `langword=` are code and with an `href=` are a link, `<paramref>` mentions a parameter,
 //! `<typeparamref>` and `<c>` are code, `<b>` and `<strong>` stress more than `<i>` and
 //! `<em>`, and `<br>` ends a line. An element not listed here is read for what it holds.
@@ -408,7 +409,13 @@ const Reader = struct {
         const name = element.name;
         if (is(name, "see") or is(name, "seealso")) {
             if (element.has("cref")) {
-                try line.append(self.arena, try self.mention(element.attribute("cref")));
+                var found = try self.mention(element.attribute("cref"));
+                var said: std.ArrayList(ir.Inline) = .empty;
+                try self.inside(&said, element);
+                if (found == .ref and said.items.len != 0) {
+                    found.ref.label = try ir.plainText(self.arena, .{ .blocks = &.{.{ .paragraph = said.items }} });
+                }
+                try line.append(self.arena, found);
             } else if (element.has("langword")) {
                 try line.append(self.arena, .{ .code = element.attribute("langword") });
             } else if (element.has("href")) {
@@ -547,6 +554,9 @@ test "a comment without elements is documentation, and markup that is not well f
     try std.testing.expectEqual(null, plain.inherits);
     try std.testing.expectEqualStrings("", (try parse(arena.allocator(), "<inheritdoc/>")).inherits.?);
     try std.testing.expectEqualStrings("IPool.Run", (try parse(arena.allocator(), "<inheritdoc cref=\"IPool.Run(int)\"/>")).inherits.?);
+    const labelled = try parse(arena.allocator(), "<summary>Runs on <see cref=\"Pool\">the pool</see>.</summary>");
+    try std.testing.expectEqualStrings("Pool", paragraphOf(labelled.blocks[0])[1].ref.text);
+    try std.testing.expectEqualStrings("the pool", paragraphOf(labelled.blocks[0])[1].ref.label);
     const open = try parse(arena.allocator(), "<summary>Left <c>open</summary><returns>Still read.</returns>");
     try std.testing.expectEqualStrings("Left ", paragraphOf(open.blocks[0])[0].text);
     try std.testing.expectEqualStrings("open", paragraphOf(open.blocks[0])[1].code);
