@@ -85,7 +85,9 @@ const Printer = struct {
         if (found.form.len != 0) try writer.print("{s}, ", .{found.form}) else try writer.print("{t}, ", .{found.kind});
         try writer.print("{t}", .{found.visibility});
         for (found.modifiers) |modifier| try writer.print(", {s}", .{modifier});
-        for (found.locations) |location| try writer.print(", {s}:{d}", .{ location.file, location.line });
+        if (found.kind == .namespace and found.locations.len > 1) {
+            try writer.print(", {d} files", .{found.locations.len});
+        } else for (found.locations) |location| try writer.print(", {s}:{d}", .{ location.file, location.line });
         try writer.writeByte('\n');
         if (found.signature.len != 0) {
             try writer.writeByte('\n');

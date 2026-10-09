@@ -5,6 +5,9 @@
 //! qualified name: "Pool.wait" finds "ke.Pool.wait", and "wait" finds every symbol of that
 //! name, whichever separator its language writes between the parts. Last, as a piece of a
 //! name, without regard to case, which is what answers a name that is only half remembered.
+//!
+//! A namespace declared in several files is in the document once for each of them. It is
+//! answered once, with what all of them declare in it.
 
 const std = @import("std");
 const ir = @import("ir.zig");
@@ -18,9 +21,34 @@ pub fn find(arena: Allocator, document: ir.Document, name: []const u8) Allocator
     for ([_]Match{ .whole, .end, .piece }) |match| {
         var found: std.ArrayList(ir.Symbol) = .empty;
         try collect(arena, document.symbols, name, match, &found);
-        if (found.items.len != 0) return found.toOwnedSlice(arena);
+        if (found.items.len != 0) return united(arena, found.items);
     }
     return &.{};
+}
+
+fn united(arena: Allocator, list: []const ir.Symbol) Allocator.Error![]const ir.Symbol {
+    var out: std.ArrayList(ir.Symbol) = .empty;
+    next: for (list) |symbol| {
+        if (symbol.kind == .namespace) {
+            for (out.items) |*known| {
+                if (known.kind != .namespace or !std.mem.eql(u8, known.qualified_name, symbol.qualified_name)) continue;
+                if (!std.mem.eql(u8, languageOf(known.id), languageOf(symbol.id))) continue;
+                known.locations = try std.mem.concat(arena, ir.Location, &.{ known.locations, symbol.locations });
+                known.members = try std.mem.concat(arena, ir.Symbol, &.{ known.members, symbol.members });
+                if (known.doc.isEmpty()) known.doc = symbol.doc;
+                continue :next;
+            }
+        }
+        try out.append(arena, symbol);
+    }
+    for (out.items) |*symbol| {
+        if (symbol.kind == .namespace) symbol.members = try united(arena, symbol.members);
+    }
+    return out.toOwnedSlice(arena);
+}
+
+fn languageOf(id: []const u8) []const u8 {
+    return id[0 .. std.mem.indexOfScalar(u8, id, ':') orelse id.len];
 }
 
 const Match = enum { whole, end, piece };
@@ -69,4 +97,32 @@ test "a name is found in full, then as the end of a qualified name, then as a pi
     try std.testing.expectEqualStrings("wait", end[0].name);
     try std.testing.expectEqual(2, (try find(arena.allocator(), document, "WAIT")).len);
     try std.testing.expectEqual(0, (try find(arena.allocator(), document, "stop")).len);
+}
+
+test "a namespace declared in several files is answered once, with the members of all" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const document: ir.Document = .{ .symbols = &.{
+        .{ .id = "csharp:A.cs", .name = "A", .qualified_name = "A.cs", .kind = .module, .members = &.{.{
+            .id = "csharp:A.cs#Ke",
+            .name = "Ke",
+            .qualified_name = "Ke",
+            .kind = .namespace,
+            .locations = &.{.{ .file = "A.cs", .line = 1 }},
+            .members = &.{.{ .id = "csharp:A.cs#Ke.Pool", .name = "Pool", .qualified_name = "Ke.Pool", .kind = .type }},
+        }} },
+        .{ .id = "csharp:B.cs", .name = "B", .qualified_name = "B.cs", .kind = .module, .members = &.{.{
+            .id = "csharp:B.cs#Ke",
+            .name = "Ke",
+            .qualified_name = "Ke",
+            .kind = .namespace,
+            .locations = &.{.{ .file = "B.cs", .line = 1 }},
+            .members = &.{.{ .id = "csharp:B.cs#Ke.Task", .name = "Task", .qualified_name = "Ke.Task", .kind = .type }},
+        }} },
+    } };
+    const found = try find(arena.allocator(), document, "Ke");
+    try std.testing.expectEqual(1, found.len);
+    try std.testing.expectEqual(2, found[0].locations.len);
+    try std.testing.expectEqual(2, found[0].members.len);
+    try std.testing.expectEqualStrings("Task", found[0].members[1].name);
 }
