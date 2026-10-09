@@ -26,7 +26,8 @@
 //! are not given sections: they are the rows of a table under the type, with the type and
 //! the default of a field or the value of an enumerator beside its description. The
 //! constants, variables, aliases and macros without parameters of a file or of a type are
-//! the rows of another, written before anything else it declares. A field
+//! the rows of another, written before anything else it declares, and the types that only
+//! name another type, as a C typedef of a number does, are the rows of a third. A field
 //! stays a section when it is described in more than one paragraph, takes parameters, holds
 //! members or carries a form of its own, as one that points to a function does. A row
 //! carries an anchor written into the file, so that a mention of it still links to it.
@@ -454,6 +455,7 @@ const Renderer = struct {
 
     fn membersOf(self: *Renderer, language: []const u8, list: []const ir.Symbol, level: usize) Error!void {
         try self.memberTable(list, .value);
+        try self.memberTable(list, .named_type);
         try self.memberTable(list, .field);
         try self.memberTable(list, .enumerator);
         for (list) |member| {
@@ -467,7 +469,7 @@ const Renderer = struct {
         var typed_rows = false;
         var valued = false;
         for (list) |member| {
-            if (!isRow(member) or Group.of(member.kind) != group) continue;
+            if (!isRow(member) or Group.of(member) != group) continue;
             rows += 1;
             if (member.type.text.len != 0) typed_rows = true;
             if (member.value.len != 0) valued = true;
@@ -478,19 +480,21 @@ const Renderer = struct {
             .field => "Field",
             .enumerator => if (valued) "Name" else "Value",
             .value => "Name",
+            .named_type => "Type",
         };
         const second = if (group == .field) "Default" else "Value";
         try writer.print("\n| {s} |", .{first});
-        if (with_type) try writer.writeAll(" Type |");
+        if (with_type) try writer.writeAll(if (group == .named_type) " Names |" else " Type |");
         if (valued) try writer.print(" {s} |", .{second});
         try writer.writeAll(" Description |\n|---|");
         if (with_type) try writer.writeAll("---|");
         if (valued) try writer.writeAll("---|");
         try writer.writeAll("---|\n");
         for (list) |member| {
-            if (!isRow(member) or Group.of(member.kind) != group) continue;
+            if (!isRow(member) or Group.of(member) != group) continue;
             try writer.print("| <a id=\"{s}\"></a>{s} |", .{ try self.rowAnchor(member), try self.cellCode(member.name) });
-            if (with_type) try writer.print(" {s} |", .{try self.typeCell(member.type)});
+            const names_itself = std.mem.eql(u8, member.type.target, member.id);
+            if (with_type) try writer.print(" {s} |", .{try self.typeCell(if (names_itself) .{ .text = member.type.text } else member.type)});
             if (valued) try writer.print(" {s} |", .{try self.typeCell(.{ .text = member.value, .target = member.target })});
             try writer.print(" {s} |\n", .{try self.cell(member.doc)});
         }
@@ -726,19 +730,21 @@ const Group = enum {
     value,
     field,
     enumerator,
+    named_type,
 
-    fn of(kind: ir.Kind) ?Group {
-        return switch (kind) {
+    fn of(member: ir.Symbol) ?Group {
+        return switch (member.kind) {
             .constant, .variable, .alias, .macro => .value,
             .field => .field,
             .enumerator => .enumerator,
+            .type => if (member.type.text.len != 0 and std.mem.indexOfScalar(u8, member.signature, '(') == null) .named_type else null,
             else => null,
         };
     }
 };
 
 fn isRow(member: ir.Symbol) bool {
-    if (Group.of(member.kind) == null or !member.isListed()) return false;
+    if (Group.of(member) == null or !member.isListed()) return false;
     if (member.kind == .field and member.form.len != 0) return false;
     if (member.doc.blocks.len > 1) return false;
     if (member.doc.blocks.len == 1 and member.doc.blocks[0] != .paragraph) return false;
@@ -1322,4 +1328,32 @@ test "the page of a file is at the path of the file, and a link between pages is
     try std.testing.expectEqualStrings("../b.md", try relative(arena.allocator(), "x/a.md", "b.md"));
     try std.testing.expectEqualStrings("y/b.md", try relative(arena.allocator(), "x/a.md", "x/y/b.md"));
     try std.testing.expectEqualStrings("../xy/b.md", try relative(arena.allocator(), "x/a.md", "xy/b.md"));
+}
+
+test "a type that only names another is a row, and one that names a function is a section" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const output = try render(arena.allocator(), .{
+        .files = &.{.{ .path = "a.h", .language = "c" }},
+        .symbols = &.{module("a.h", "c", .{}, &.{
+            .{ .id = "c:a.h#handle", .name = "handle", .qualified_name = "handle", .kind = .type, .form = "typedef", .signature = "typedef uint64_t handle", .type = .{ .text = "uint64_t" }, .doc = words("Names a pool.") },
+            .{ .id = "c:a.h#stop", .name = "stop", .qualified_name = "stop", .kind = .type, .form = "typedef", .signature = "typedef void (*stop)(void)", .type = .{ .text = "void" } },
+            .{ .id = "c:a.h#pool", .name = "pool", .qualified_name = "pool", .kind = .type, .form = "typedef", .signature = "typedef struct pool pool", .type = .{ .text = "struct pool", .target = "c:a.h#pool" } },
+        }, &.{})},
+    });
+    try std.testing.expectEqualStrings(
+        \\# Title
+        \\
+        \\| Type | Names | Description |
+        \\|---|---|---|
+        \\| <a id="handle."></a>`handle` | `uint64_t` | Names a pool. |
+        \\| <a id="pool."></a>`pool` | `struct pool` |  |
+        \\
+        \\## `stop`
+        \\
+        \\```c
+        \\typedef void (*stop)(void)
+        \\```
+        \\
+    , output);
 }

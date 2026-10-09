@@ -780,6 +780,8 @@ const Reader = struct {
             if (declared.function) |function| {
                 symbol.params = try self.parameters(function);
                 symbol.type = .{ .text = try self.resultType(node, specifier, declarator, function) };
+            } else if (declared.name) |named| {
+                symbol.type = .{ .text = try self.valueType(node, specifier, declarator, named) };
             }
             try self.add(scope, symbol, try self.take(scope), first);
         }
@@ -1552,4 +1554,19 @@ test "a field that points to a function says so in its form" {
     try std.testing.expectEqual(ir.Kind.field, pool.members[0].kind);
     try std.testing.expectEqualStrings("function pointer", pool.members[0].form);
     try std.testing.expectEqualStrings("", pool.members[1].form);
+}
+
+test "a typedef of a type that is not a function carries the type it names" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const file = try readForTest(arena.allocator(),
+        \\typedef uint64_t handle;
+        \\typedef struct pool pool;
+        \\typedef const char *name;
+        \\typedef void (*stop)(void);
+    );
+    try std.testing.expectEqualStrings("uint64_t", file.symbol.members[0].type.text);
+    try std.testing.expectEqualStrings("struct pool", file.symbol.members[1].type.text);
+    try std.testing.expectEqualStrings("const char *", file.symbol.members[2].type.text);
+    try std.testing.expectEqualStrings("void", file.symbol.members[3].type.text);
 }
