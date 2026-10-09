@@ -299,8 +299,9 @@ const Linker = struct {
             }
             const name = text_of[at..end];
             const member = at != 0 and (text_of[at - 1] == '.' or text_of[at - 1] == '@');
+            const pointer = self.lexical and std.mem.eql(u8, name, "c") and std.mem.endsWith(u8, text_of[0..at], "[*") and std.mem.startsWith(u8, text_of[end..], "]");
             at = end;
-            if (member or self.isLanguageWord(name)) continue;
+            if (member or pointer or self.isLanguageWord(name)) continue;
             const generic = for (owner.type_params) |param| {
                 if (std.mem.eql(u8, param.name, name)) break true;
             } else false;
@@ -1056,4 +1057,20 @@ test "a name asked of a C import is found in the headers its file includes" {
     try std.testing.expectEqualStrings("c:pool.h#pool", run.params[0].type.target);
     try std.testing.expectEqualStrings("c:failure.h#failure", run.params[1].type.target);
     try std.testing.expectEqualStrings("", run.params[2].type.target);
+}
+
+test "the letter of a Zig pointer to C is not taken for a name" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const main = try zig_source.read(allocator, "main.zig",
+        \\const c = struct {
+        \\    pub const failure = struct {};
+        \\};
+        \\fn run(out: [*c][*c]c.failure, name: [*c]const u8) void {}
+    );
+    const result = try link(allocator, try documentOf(allocator, &.{main}), .{});
+    const run = result.document.symbols[0].members[1];
+    try std.testing.expectEqualStrings("zig:main.zig#c.failure", run.params[0].type.target);
+    try std.testing.expectEqualStrings("", run.params[1].type.target);
 }
