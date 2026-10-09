@@ -1,7 +1,25 @@
 .{
-    .name = .zigdoc,
+    .name = .docir,
     .version = "0.1.0",
-    .fingerprint = 0x50a871f439416ec7,
+    .dependencies = .{
+        .tree_sitter = .{
+            .url = "git+https://github.com/tree-sitter/zig-tree-sitter#0cf58172e61f6fdd16f681cde42b4acb531a23db",
+            .hash = "tree_sitter-0.26.0-8heIf3CaAQDeVTQc0DMSBhbQAEx5aF-dTen4_LPxMgrv",
+        },
+        .tree_sitter_c = .{
+            .url = "git+https://github.com/tree-sitter/tree-sitter-c#b780e47fc780ddc8da13afa35a3f4ed5c157823d",
+            .hash = "tree_sitter_c-0.24.2-y5boS-ptQADHoCoVfjGT_nFtFQ5LbomIkW0fxG3_cmdB",
+        },
+        .tree_sitter_cpp = .{
+            .url = "git+https://github.com/tree-sitter/tree-sitter-cpp#c009222808634c1014f82438d4883753516a2c24",
+            .hash = "N-V-__8AANaPmwEnMtkr9GTxTZwhdy23LoB0H39WX2-BCUjv",
+        },
+        .tree_sitter_c_sharp = .{
+            .url = "git+https://github.com/tree-sitter/tree-sitter-c-sharp#cac6d5fb595f5811a076336682d5d595ac1c9e85",
+            .hash = "N-V-__8AAGpz0wEahQ1XcAPswpnWM9etD4V5CeiVedJF7jBu",
+        },
+    },
+    .fingerprint = 0x897074421ae24974,
     .minimum_zig_version = "0.16.0",
-    .paths = .{ "build.zig", "build.zig.zon", "src" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README.md" },
 }

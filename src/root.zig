@@ -1,129 +1,116 @@
-//! zigdoc turns the documentation written in source code into data, and that data into text.
+//! docir turns the documentation written in source code into data, and that data into text.
 //!
-//! `extract` starts at the root file of a module, follows its imports as `project`
-//! describes, reads each file with `zig_source` or `doxygen`, and has `resolve` turn every
-//! name the documentation mentions into a reference. The result is a `model.Document`, which `model.writeJson`
-//! stores. `markdown.write` renders a document read back with `model.readJson`.
+//! The work is done in three stages around one representation, `ir`. A reader turns the
+//! sources of one language into it: `zig_source` reads Zig, `c_source` reads C and C++ and
+//! `csharp_source` reads C#, and `project` decides which files they read, by following
+//! imports from the root file of a module or by taking every file of a directory. `link` resolves the names the documentation mentions into references. A writer
+//! renders the result: `markdown` writes one Markdown file and `text` writes for a terminal,
+//! where `query` finds the symbols a name asks for. Between stages the representation is
+//! JSON, written by `ir.writeJson` and read back by `ir.readJson`, so a stage may as well
+//! be another program, and `schema` describes that JSON to one.
 //!
-//! Nothing here is a command. A build asks for documentation through the step the
-//! `build.zig` of this package offers, which takes what `extract` needs from the module it
-//! is given.
+//! `read`, `combine` and `resolve` are the first two stages as functions. `cli` offers the
+//! three stages as the commands of the program, and the build file of this package runs
+//! that program as the steps of a build, with what `read` needs taken from a module.
 
 const std = @import("std");
 
-pub const model = @import("model.zig");
+pub const ir = @import("ir.zig");
 pub const project = @import("project.zig");
-pub const resolve = @import("resolve.zig");
+pub const link = @import("link.zig");
+pub const schema = @import("schema.zig");
 pub const markdown = @import("markdown.zig");
+pub const text = @import("text.zig");
+pub const query = @import("query.zig");
+pub const markdown_text = @import("markdown_text.zig");
 pub const zig_source = @import("zig_source.zig");
-pub const doxygen = @import("doxygen.zig");
+pub const c_source = @import("c_source.zig");
+pub const csharp_source = @import("csharp_source.zig");
+pub const xml_comment = @import("xml_comment.zig");
+pub const doxygen_comment = @import("doxygen_comment.zig");
+pub const cli = @import("cli.zig");
 
-/// A document, and the citations in it that name nothing.
-pub const Extraction = struct {
-    /// Everything that was read, resolved.
-    document: model.Document,
-    /// Empty when every citation of a documented file names something.
-    problems: []const resolve.Problem,
-};
+/// Reads the root of `options` and everything it imports into a document that is not
+/// linked. An import into a reference-only module keeps the path of the file it leads to,
+/// and that file is not in the document.
+pub fn read(arena: std.mem.Allocator, io: std.Io, options: project.Options) !ir.Document {
+    return documentOf(arena, try project.Project.open(arena, io, options));
+}
 
-/// Reads the root of `options` and everything it imports into one resolved document. A
-/// file of a reference-only module comes first and holds only the top-level declarations
-/// that a reference names or reaches into, and the imports those declarations make.
-pub fn extract(arena: std.mem.Allocator, io: std.Io, options: project.Options) !Extraction {
-    var loaded = try project.Project.open(arena, io, options);
-    const resolved = try resolve.resolve(arena, loaded.files.items, .{ .context = &loaded, .find = find });
-    var targets: std.StringHashMapUnmanaged(void) = .empty;
-    for (resolved.files) |file| {
-        try collect(arena, &targets, file.doc);
-        try collectDecls(arena, &targets, file.decls);
+/// The document of what `loaded` read, not linked.
+pub fn documentOf(arena: std.mem.Allocator, loaded: project.Project) std.mem.Allocator.Error!ir.Document {
+    const files = try arena.alloc(ir.File, loaded.units.items.len);
+    const symbols = try arena.alloc(ir.Symbol, loaded.units.items.len);
+    for (files, symbols, loaded.units.items) |*file, *symbol, unit| {
+        file.* = unit.file;
+        symbol.* = unit.symbol;
     }
-    var files: std.ArrayList(model.File) = .empty;
-    for (loaded.referenced.items) |file| {
-        if (try narrowed(arena, targets, file.*)) |kept| try files.append(arena, kept);
+    return .{ .files = files, .symbols = symbols };
+}
+
+/// The files of every one of `documents` in one document that is not linked. A file that
+/// several of them hold is taken from the first, except that it is documented when any of
+/// them documents it.
+pub fn combine(arena: std.mem.Allocator, documents: []const ir.Document) std.mem.Allocator.Error!ir.Document {
+    var files: std.ArrayList(ir.File) = .empty;
+    var symbols: std.ArrayList(ir.Symbol) = .empty;
+    var positions: std.StringHashMapUnmanaged(usize) = .empty;
+    for (documents) |document| {
+        const count = @min(document.files.len, document.symbols.len);
+        for (document.files[0..count], document.symbols[0..count]) |file, symbol| {
+            const entry = try positions.getOrPut(arena, file.path);
+            if (entry.found_existing) {
+                if (file.documented) files.items[entry.value_ptr.*].documented = true;
+                continue;
+            }
+            entry.value_ptr.* = files.items.len;
+            try files.append(arena, file);
+            try symbols.append(arena, symbol);
+        }
     }
-    try files.appendSlice(arena, resolved.files);
-    return .{
-        .document = .{ .root = loaded.root, .files = try files.toOwnedSlice(arena) },
-        .problems = resolved.problems,
+    return .{ .files = try files.toOwnedSlice(arena), .symbols = try symbols.toOwnedSlice(arena) };
+}
+
+/// Links `document`. A reference that goes through an import into one of `references` is
+/// followed into the sources of that module, which are read from disk as they are reached.
+/// What was reached comes first in the linked document and holds only the symbols that a
+/// reference names or reaches into. A mention of one of `external` is no problem.
+pub fn resolve(arena: std.mem.Allocator, io: std.Io, document: ir.Document, references: []const project.Module, external: []const []const u8) std.mem.Allocator.Error!link.Result {
+    if (references.len == 0) return link.link(arena, document, .{ .external = external });
+    var loaded = try project.Project.references(arena, io, references);
+    return link.link(arena, document, .{ .source = .{ .context = &loaded, .find = find }, .external = external });
+}
+
+/// One line saying what `problem` is, for the person who wrote the documentation.
+pub fn describe(arena: std.mem.Allocator, problem: link.Problem) std.mem.Allocator.Error![]const u8 {
+    return switch (problem.kind) {
+        .symbol => std.fmt.allocPrint(arena, "{s}: `{s}`, cited by {s}, is not declared", .{ problem.path, problem.citation, problem.owner }),
+        .parameter => std.fmt.allocPrint(arena, "{s}: {s} documents a parameter `{s}` it does not have", .{ problem.path, problem.owner, problem.citation }),
     };
 }
 
-fn find(context: *anyopaque, path: []const u8) std.mem.Allocator.Error!?*const model.File {
+fn find(context: *anyopaque, path: []const u8) std.mem.Allocator.Error!?*const ir.Unit {
     const loaded: *project.Project = @ptrCast(@alignCast(context));
     return loaded.reference(path);
 }
 
-fn collect(arena: std.mem.Allocator, targets: *std.StringHashMapUnmanaged(void), text: model.Text) std.mem.Allocator.Error!void {
-    for (text.links) |link| try targets.put(arena, link.target, {});
-}
-
-fn collectDecls(arena: std.mem.Allocator, targets: *std.StringHashMapUnmanaged(void), decls: []const model.Decl) std.mem.Allocator.Error!void {
-    for (decls) |decl| {
-        if (decl.target.len != 0) try targets.put(arena, decl.target, {});
-        try collect(arena, targets, decl.doc);
-        try collect(arena, targets, decl.returns);
-        for (decl.params) |param| try collect(arena, targets, param.doc);
-        try collectDecls(arena, targets, decl.members);
-    }
-}
-
-fn narrowed(arena: std.mem.Allocator, targets: std.StringHashMapUnmanaged(void), file: model.File) std.mem.Allocator.Error!?model.File {
-    var decls: std.ArrayList(model.Decl) = .empty;
-    var imports: std.ArrayList(model.Import) = .empty;
-    for (file.decls) |decl| {
-        var names = targets.keyIterator();
-        const wanted = while (names.next()) |target| {
-            if (!std.mem.startsWith(u8, target.*, decl.id)) continue;
-            if (target.len == decl.id.len or target.*[decl.id.len] == '.') break true;
-        } else false;
-        if (!wanted) continue;
-        var kept = decl;
-        if (decl.kind == .import) {
-            for (file.imports) |import| {
-                if (!std.mem.eql(u8, import.name, decl.value)) continue;
-                kept.target = import.path;
-                try imports.append(arena, import);
-                break;
-            }
-        }
-        try decls.append(arena, kept);
-    }
-    if (decls.items.len == 0 and !targets.contains(file.path)) return null;
-    var out = file;
-    out.decls = try decls.toOwnedSlice(arena);
-    out.imports = try imports.toOwnedSlice(arena);
-    return out;
-}
-
-test "a referenced file keeps only what a reference names or reaches into" {
+test "combined documents hold each file once" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    const allocator = arena.allocator();
-    var targets: std.StringHashMapUnmanaged(void) = .empty;
-    try targets.put(allocator, "lib/lib.zig#Pool.wait", {});
-    try targets.put(allocator, "lib/lib.zig#mem", {});
-
-    var file = try zig_source.read(allocator, "lib/lib.zig",
-        \\pub const mem = @import("mem.zig");
-        \\pub const fs = @import("fs.zig");
-        \\pub const Pool = struct {
-        \\    pub fn wait() void {}
-        \\};
-        \\pub const Pooled = struct {};
-    );
-    file.imports = &.{
-        .{ .name = "mem.zig", .kind = .file, .path = "lib/mem.zig" },
-        .{ .name = "fs.zig", .kind = .file, .path = "lib/fs.zig" },
+    const header: ir.Symbol = .{ .id = "c:pool.h", .name = "pool.h", .qualified_name = "pool.h", .kind = .module };
+    const first: ir.Document = .{
+        .files = &.{ .{ .path = "pool.h", .language = "c", .documented = false }, .{ .path = "a.zig", .language = "zig" } },
+        .symbols = &.{ header, .{ .id = "zig:a.zig", .name = "a.zig", .qualified_name = "a.zig", .kind = .module } },
     };
-    const kept = (try narrowed(allocator, targets, file)).?;
-    try std.testing.expectEqual(2, kept.decls.len);
-    try std.testing.expectEqualStrings("mem", kept.decls[0].name);
-    try std.testing.expectEqualStrings("lib/mem.zig", kept.decls[0].target);
-    try std.testing.expectEqualStrings("Pool", kept.decls[1].name);
-    try std.testing.expectEqual(1, kept.imports.len);
-
-    const other = try zig_source.read(allocator, "lib/other.zig", "pub const Pool = struct {};\n");
-    try std.testing.expectEqual(null, try narrowed(allocator, targets, other));
+    const second: ir.Document = .{
+        .files = &.{.{ .path = "pool.h", .language = "c" }},
+        .symbols = &.{header},
+    };
+    const combined = try combine(arena.allocator(), &.{ first, second });
+    try std.testing.expectEqual(2, combined.files.len);
+    try std.testing.expectEqual(2, combined.symbols.len);
+    try std.testing.expect(combined.files[0].documented);
+    try std.testing.expect(!combined.linked);
 }
 
 test {

@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig fmt --check build.zig build.zig.zon src
+      - run: zig build test
+      - run: zig build test -Doptimize=ReleaseSafe
+      - run: zig build docs
+      - if: runner.os == 'Linux'
+        run: git diff --exit-code docs

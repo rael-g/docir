@@ -1,100 +1,115 @@
-# zigdoc
+# docir
 
-Turns the documentation written in source code into a JSON document, and that document into
-plain Markdown. It reads Zig sources and, because Zig projects usually carry C, the Doxygen
-comments of C headers.
+A documentation compiler. It reads the declarations and doc comments of a code base into
+one JSON document, resolves the names the comments mention, and renders the result.
 
-There is no command to install and no site to host. A build asks for documentation with one
-line in its `build.zig`, and gets one `.json` and one `.md` per module.
-
-## What it does
-
-- Reads `//!` and `///` comments in the style Zig's own autodoc reads, so nothing has to be
-  rewritten. Declarations that are not `pub` are documented too when their author wrote a
-  comment on them.
-- Reads Doxygen comments in C headers: `/** */`, `///`, `@brief`, `@param`, `@return` and
-  the trailing `///<` form.
-- Follows `@import`, `@cInclude` and `#include` from the root file of a module, using the
-  imports and include directories the build gave that module. A header reached through
-  `@cImport` lands in the same document as the Zig code that implements it.
-- Turns a name between backticks into a link to the declaration it names, across files and
-  across languages, and reports the ones that name nothing. A name that leads into the
-  standard library is resolved as well.
-- Takes a `test` named after a declaration as an example of it, and lists the tests named
-  by a sentence as the verified behaviour of their file.
-- Stores everything in JSON before rendering. The Markdown writer reads only that JSON, and
-  so can any other writer.
-
-## Use
-
-Requires Zig 0.16. Add the package to a project:
-
-```bash
-zig fetch --save git+https://github.com/rael-g/zigdoc
+```
+sources ── read ──▶ document ── link ──▶ linked document ── write ──▶ Markdown, text
 ```
 
-Then, at the end of the project's `build.zig`:
+| Language | Parser | Comments |
+|---|---|---|
+| Zig | `std.zig.Ast` | `//!`, `///`, Markdown |
+| C, C++ | tree-sitter | Doxygen |
+| C# | tree-sitter | XML documentation |
+
+Requires Zig 0.16. Every dependency is source in `build.zig.zon`.
+
+## Command line
+
+```bash
+zig build
+```
+
+```bash
+docir read src/root.zig -o api.json
+docir link api.json --strict -o api.linked.json
+docir write markdown api.linked.json -o api.md
+```
+
+The stages pipe:
+
+```bash
+docir read src | docir link | docir write markdown > api.md
+```
+
+`read` takes the root file of a Zig module and follows its imports and includes, or a
+directory and reads every source file under it. `link` takes any number of documents, so
+several languages end up in one with references across them.
+
+```bash
+docir query Pool.wait api.linked.json
+```
+
+```
+ke.Pool.wait
+    function, public, src/pool.zig:41
+
+    pub fn wait(self: *Pool, task: Task) Error!void
+
+    Blocks until `task` finishes.
+```
+
+`docir help` lists every option.
+
+## Zig build
+
+```bash
+zig fetch --save git+https://github.com/rael-g/docir
+```
 
 ```zig
 const std = @import("std");
-const zigdoc = @import("zigdoc");
+const docir = @import("docir");
 
 pub fn build(b: *std.Build) void {
-    // ... the build, with its installed artifacts ...
-    _ = zigdoc.addDocsStep(b, .{});
+    const program = b.dependency("docir", .{}).artifact("docir");
+    _ = docir.addDocsStep(b, program, .{});
 }
 ```
 
-```bash
-zig build docs
-```
+`zig build docs` writes `zig-out/docs/<artifact>.json` and `.md` for every installed
+artifact, with the modules, imports and include directories taken from the build graph.
 
-This writes `zig-out/docs/<artifact>.json` and `zig-out/docs/<artifact>.md` for every
-artifact the build installs.
-
-To document one module chosen by hand, or to change where the files go:
+One module, or a directory of sources the build does not describe:
 
 ```zig
-const docs = zigdoc.addDocs(b, module, .{
-    .name = "scheduler",
-    .strict = true,
-    .documented_dirs = &.{b.path("include")},
-    .output_dir = b.path("docs"),
-});
-b.step("docs", "Write the documentation").dependOn(docs);
+const docs = docir.addDocs(b, program, module, .{ .name = "scheduler", .strict = true });
+const managed = docir.addSourceDocs(b, program, b.path("src/csharp"), .{ .name = "managed" });
 ```
 
-| Option | Meaning |
+| Option | |
 |---|---|
-| `name` | Base name of the two files. |
-| `title` | First heading of the Markdown file. Defaults to `name`. |
-| `strict` | Fail the step when a citation names nothing. Otherwise it is a warning. |
-| `documented_dirs` | Directories documented besides the build root of the module. |
-| `install_subdir` | Directory under the install prefix. Defaults to `docs`. |
-| `output_dir` | Directory that receives the files instead of the install prefix. |
+| `name` | Base name of the output files. |
+| `title` | First heading. Defaults to `name`. |
+| `strict` | Fail on a mention that names nothing. |
+| `documented_dirs` | Directories documented besides the module's own. |
+| `excluded_dirs` | Directories read for references only. |
+| `external_names` | Names declared outside the sources. |
+| `pages` | Also write Markdown as a directory of pages. |
+| `install_subdir` | Directory under the prefix. Defaults to `docs`. |
+| `source_dir` | Write into the source tree instead of the prefix. |
 
-Files outside the documented directories are still read, so that a name pointing into them
-resolves, but they get no section of their own.
+## Site
 
-## What gets a section
+```bash
+docir write markdown api.linked.json --pages -o site/api
+```
 
-A declaration appears in the Markdown when it has documentation or an example, or when one
-of its members does. Everything else stays in the JSON only, which holds every declaration
-of every file with its signature, its lines and its visibility.
+One page per file or namespace, one per type, an `index.md` and a `toc.yml`, linked across
+pages. [DocFX](https://github.com/dotnet/docfx) builds a site from that directory as it is.
 
-## Limits
+## Document
 
-- Both readers work on syntax. A declaration that only exists after `comptime` evaluation
-  is not seen, which is also true of Zig's autodoc.
-- The C reader is a scanner for declarations and their comments, not a C parser. Headers
-  that build declarations out of macros are beyond it.
+The JSON is the interface: any reader can produce it and any writer can consume it.
+[docs/docir.schema.json](docs/docir.schema.json) is its schema, generated from the types in
+[src/ir.zig](src/ir.zig) and printed by `docir schema`.
 
 ## Reference
 
-[docs/zigdoc.md](docs/zigdoc.md) is zigdoc documenting itself, starting from its own
-`build.zig`. It is regenerated with `zig build docs` and describes the JSON layout in
-`src/model.zig`.
+[docs/docir.md](docs/docir.md) and [docs/build.md](docs/build.md), generated by docir from
+its own sources.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT
