@@ -18,7 +18,14 @@
 //! only place of the package that produces that markup. A mention whose target has a
 //! section becomes a link to it. The link target is the anchor a Markdown renderer derives
 //! from the heading: its text in lower case, without punctuation, with a counter appended
-//! when the same text was already used. No anchor is written into the file.
+//! when the same text was already used.
+//!
+//! The fields of a type that need no more than a line, and the values of an enumeration,
+//! are not given sections: they are the rows of a table under the type, with the type and
+//! the default of a field or the value of an enumerator beside its description. A field
+//! stays a section when it is described in more than one paragraph, takes parameters, holds
+//! members or carries a form of its own, as one that points to a function does. A row
+//! carries an anchor written into the file, so that a mention of it still links to it.
 //!
 //! `writePages` writes the same document as a directory of smaller files, for a tool that
 //! makes a site of them: one for each file or namespace, one for each type with documented
@@ -356,7 +363,58 @@ const Renderer = struct {
         for (symbol.examples) |example| {
             try writer.print("\n**Example:**\n\n```{s}\n{s}\n```\n", .{ if (example.language.len != 0) example.language else language, example.code });
         }
-        for (symbol.members) |member| try self.section(language, member, level + 1);
+        try self.memberTable(symbol, .field);
+        try self.memberTable(symbol, .enumerator);
+        for (symbol.members) |member| {
+            if (!isRow(member)) try self.section(language, member, level + 1);
+        }
+    }
+
+    fn memberTable(self: *Renderer, symbol: ir.Symbol, kind: ir.Kind) Error!void {
+        const writer = self.writer;
+        var rows: usize = 0;
+        var valued = false;
+        for (symbol.members) |member| {
+            if (member.kind != kind or !isRow(member)) continue;
+            rows += 1;
+            if (member.value.len != 0) valued = true;
+        }
+        if (rows == 0) return;
+        if (kind == .field) {
+            try writer.writeAll(if (valued) "\n| Field | Type | Default | Description |\n|---|---|---|---|\n" else "\n| Field | Type | Description |\n|---|---|---|\n");
+        } else {
+            try writer.writeAll(if (valued) "\n| Name | Value | Description |\n|---|---|---|\n" else "\n| Value | Description |\n|---|---|\n");
+        }
+        for (symbol.members) |member| {
+            if (member.kind != kind or !isRow(member)) continue;
+            try writer.print("| <a id=\"{s}\"></a>{s} |", .{ try self.rowAnchor(member), try self.cellCode(member.name) });
+            if (kind == .field) try writer.print(" {s} |", .{try self.typeCell(member.type)});
+            if (valued) try writer.print(" {s} |", .{try self.cellCode(member.value)});
+            try writer.print(" {s} |\n", .{try self.cell(member.doc)});
+        }
+    }
+
+    fn rowAnchor(self: *Renderer, member: ir.Symbol) Error![]const u8 {
+        var slug: std.ArrayList(u8) = .empty;
+        var dotted = false;
+        for (member.qualified_name) |ch| {
+            if (std.ascii.isAlphanumeric(ch) or ch == '_') {
+                try slug.append(self.arena, std.ascii.toLower(ch));
+            } else if (slug.items.len != 0 and slug.items[slug.items.len - 1] != '.') {
+                try slug.append(self.arena, '.');
+                dotted = true;
+            }
+        }
+        if (!dotted) try slug.append(self.arena, '.');
+        const entry = try self.used.getOrPut(self.arena, slug.items);
+        if (entry.found_existing) {
+            entry.value_ptr.* += 1;
+        } else {
+            entry.value_ptr.* = 0;
+        }
+        const anchor = if (entry.value_ptr.* == 0) slug.items else try std.fmt.allocPrint(self.arena, "{s}-{d}", .{ slug.items, entry.value_ptr.* });
+        if (self.collecting) try self.anchors.put(self.arena, member.id, .{ .page = self.current, .name = anchor });
+        return anchor;
     }
 
     fn nameOf(self: *Renderer, id: []const u8) []const u8 {
@@ -515,6 +573,14 @@ const Renderer = struct {
         return out.toOwnedSlice(self.arena);
     }
 };
+
+fn isRow(member: ir.Symbol) bool {
+    if (member.kind != .field and member.kind != .enumerator) return false;
+    if (!member.isListed() or member.form.len != 0) return false;
+    if (member.doc.blocks.len > 1) return false;
+    if (member.doc.blocks.len == 1 and member.doc.blocks[0] != .paragraph) return false;
+    return member.params.len == 0 and member.type_params.len == 0 and member.returns.isEmpty() and member.raises.len == 0 and member.examples.len == 0 and member.members.len == 0;
+}
 
 fn find(symbol: ir.Symbol, id: []const u8) ?ir.Symbol {
     if (std.mem.eql(u8, symbol.id, id)) return symbol;
@@ -851,4 +917,72 @@ test "a document written as pages has a page per section and per type, an index 
     try std.testing.expect(std.mem.indexOf(u8, pages[1].text, "## `Ke.Pool.Stop`") != null);
     try std.testing.expectEqualStrings("# Title\n\n- [`Ke`](ke.md)\n", pages[2].text);
     try std.testing.expectEqualStrings("- name: \"Ke\"\n  href: ke.md\n  items:\n  - name: \"Pool\"\n    href: ke.pool.md\n", pages[3].text);
+}
+
+test "plain fields and enum values are rows of a table, and a mention of one links to its row" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const output = try render(arena.allocator(), .{
+        .files = &.{.{ .path = "a.h", .language = "c" }},
+        .symbols = &.{module("a.h", "c", .{}, &.{
+            .{
+                .id = "c:a.h#pool",
+                .name = "pool",
+                .qualified_name = "pool",
+                .kind = .type,
+                .signature = "struct pool",
+                .doc = .{ .blocks = &.{.{ .paragraph = &.{ .{ .text = "Sized by " }, .{ .ref = .{ .text = "pool.count", .target = "c:a.h#pool.count" } }, .{ .text = "." } } }} },
+                .members = &.{
+                    .{ .id = "c:a.h#pool.count", .name = "count", .qualified_name = "pool.count", .kind = .field, .signature = "int count", .type = .{ .text = "int" }, .value = "4", .doc = words("How many.") },
+                    .{ .id = "c:a.h#pool.stop", .name = "stop", .qualified_name = "pool.stop", .kind = .field, .form = "function pointer", .signature = "void (*stop)(void)", .type = .{ .text = "void" } },
+                    .{ .id = "c:a.h#pool.next", .name = "next", .qualified_name = "pool.next", .kind = .field, .signature = "pool *next", .type = .{ .text = "pool *", .target = "c:a.h#pool" } },
+                },
+            },
+            .{
+                .id = "c:a.h#mode",
+                .name = "mode",
+                .qualified_name = "mode",
+                .kind = .type,
+                .signature = "enum mode",
+                .members = &.{
+                    .{ .id = "c:a.h#mode.ON", .name = "ON", .qualified_name = "mode.ON", .kind = .enumerator, .signature = "ON", .doc = words("Runs.") },
+                    .{ .id = "c:a.h#mode.OFF", .name = "OFF", .qualified_name = "mode.OFF", .kind = .enumerator, .signature = "OFF" },
+                },
+            },
+        }, &.{})},
+    });
+    try std.testing.expectEqualStrings(
+        \\# Title
+        \\
+        \\## `pool`
+        \\
+        \\```c
+        \\struct pool
+        \\```
+        \\
+        \\Sized by [`pool.count`](#pool.count).
+        \\
+        \\| Field | Type | Default | Description |
+        \\|---|---|---|---|
+        \\| <a id="pool.count"></a>`count` | `int` | `4` | How many. |
+        \\| <a id="pool.next"></a>`next` | [`pool *`](#pool) |  |  |
+        \\
+        \\### `pool.stop`
+        \\
+        \\```c
+        \\void (*stop)(void)
+        \\```
+        \\
+        \\## `mode`
+        \\
+        \\```c
+        \\enum mode
+        \\```
+        \\
+        \\| Value | Description |
+        \\|---|---|
+        \\| <a id="mode.on"></a>`ON` | Runs. |
+        \\| <a id="mode.off"></a>`OFF` |  |
+        \\
+    , output);
 }

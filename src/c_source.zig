@@ -824,6 +824,7 @@ const Reader = struct {
             if (declared.function) |function| {
                 const called = function.childByFieldName("declarator");
                 if (called != null and !is(called.?.kind(), "parenthesized_declarator")) symbol.kind = .function;
+                if (symbol.kind == .field) symbol.form = "function pointer";
                 symbol.params = try self.parameters(function);
                 if (specifier) |written| symbol.type = .{ .text = try self.resultType(node, written, declarator, function) };
                 if (self.macros) |known| {
@@ -1536,4 +1537,19 @@ test "a macro among the parameters of a declaration is put out of the way like o
     try std.testing.expectEqual(3, hash.params.len);
     try std.testing.expectEqualStrings("length", hash.params[1].name);
     try std.testing.expectEqualStrings("seed", hash.params[2].name);
+}
+
+test "a field that points to a function says so in its form" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const file = try readForTest(arena.allocator(),
+        \\typedef struct pool {
+        \\    void (*stop)(void);
+        \\    int count;
+        \\} pool;
+    );
+    const pool = file.symbol.members[0];
+    try std.testing.expectEqual(ir.Kind.field, pool.members[0].kind);
+    try std.testing.expectEqualStrings("function pointer", pool.members[0].form);
+    try std.testing.expectEqualStrings("", pool.members[1].form);
 }
