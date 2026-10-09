@@ -69,7 +69,9 @@ pub const Page = struct {
 /// `write` would give a file or a namespace, a page per type of a namespace that has
 /// documented members, `index.md` listing the first under `title`, and `toc.yml`, which is the same
 /// list with the types under each, as a sequence of entries with a name, the file it leads to
-/// and the entries under it. A page is
+/// and the entries under it. The files are listed as the tree of their directories, a
+/// directory being an entry that leads nowhere and holds what is in it, and directories
+/// that hold nothing but one another being one entry. A page is
 /// named after what it documents, in lower case. A mention links across pages.
 pub fn writePages(arena: Allocator, title: []const u8, document: ir.Document) Error![]const Page {
     var renderer: Renderer = .{ .arena = arena, .roots = try rootsOf(arena, document), .title = title };
@@ -103,22 +105,56 @@ pub fn writePages(arena: Allocator, title: []const u8, document: ir.Document) Er
         try pages.append(arena, .{ .path = files.items[index], .text = out.written() });
     }
 
+    var tree: Node = .{ .name = "" };
+    var holder: *Node = &tree;
+    for (plan.items, 0..) |planned, index| {
+        if (planned.is_type) {
+            try holder.children.append(arena, try Node.create(arena, planned.symbol.name, index));
+            continue;
+        }
+        if (planned.symbol.kind != .module) {
+            holder = try Node.create(arena, planned.symbol.qualified_name, index);
+            try tree.children.append(arena, holder);
+            continue;
+        }
+        var parent: *Node = &tree;
+        var parts = std.mem.tokenizeScalar(u8, planned.symbol.qualified_name, '/');
+        while (parts.next()) |part| {
+            if (parts.peek() == null) {
+                holder = try Node.create(arena, part, index);
+                try parent.children.append(arena, holder);
+                break;
+            }
+            parent = for (parent.children.items) |child| {
+                if (child.page == null and std.mem.eql(u8, child.name, part)) break child;
+            } else made: {
+                const directory = try Node.create(arena, part, null);
+                try parent.children.append(arena, directory);
+                break :made directory;
+            };
+        }
+    }
+
     var index_page: Writer.Allocating = .init(arena);
     var toc: Writer.Allocating = .init(arena);
     try index_page.writer.print("# {s}\n\n", .{title});
-    for (plan.items, 0..) |planned, index| {
-        if (planned.is_type) {
-            try toc.writer.print("  - name: {s}\n    href: {s}\n", .{ try yamlString(arena, planned.symbol.name), files.items[index] });
-            continue;
-        }
-        try index_page.writer.print("- [{s}]({s})\n", .{ try renderer.code(planned.symbol.qualified_name), files.items[index] });
-        try toc.writer.print("- name: {s}\n  href: {s}\n", .{ try yamlString(arena, planned.symbol.qualified_name), files.items[index] });
-        if (index + 1 < plan.items.len and plan.items[index + 1].is_type) try toc.writer.writeAll("  items:\n");
-    }
+    for (tree.children.items) |child| try renderer.entryOf(child, 0, &index_page.writer, &toc.writer);
     try pages.append(arena, .{ .path = "index.md", .text = index_page.written() });
     try pages.append(arena, .{ .path = "toc.yml", .text = toc.written() });
     return pages.toOwnedSlice(arena);
 }
+
+const Node = struct {
+    name: []const u8,
+    page: ?usize = null,
+    children: std.ArrayList(*Node) = .empty,
+
+    fn create(arena: Allocator, name: []const u8, page: ?usize) Allocator.Error!*Node {
+        const node = try arena.create(Node);
+        node.* = .{ .name = name, .page = page };
+        return node;
+    }
+};
 
 const Planned = struct {
     root: usize,
@@ -289,6 +325,30 @@ const Renderer = struct {
             try self.heading(2, "Verified behaviour", false, null);
             try writer.writeByte('\n');
             for (root.symbol.verified) |sentence| try writer.print("- {s}\n", .{sentence});
+        }
+    }
+
+    fn entryOf(self: *Renderer, node: *const Node, depth: usize, index: *Writer, toc: *Writer) Error!void {
+        var shown = node.name;
+        var entry = node;
+        while (entry.page == null and entry.children.items.len == 1 and entry.children.items[0].page == null) {
+            entry = entry.children.items[0];
+            shown = try std.fmt.allocPrint(self.arena, "{s}/{s}", .{ shown, entry.name });
+        }
+        try toc.splatByteAll(' ', depth * 2);
+        try toc.print("- name: {s}\n", .{try yamlString(self.arena, shown)});
+        try index.splatByteAll(' ', depth * 2);
+        if (entry.page) |own| {
+            try toc.splatByteAll(' ', depth * 2);
+            try toc.print("  href: {s}\n", .{self.files[own]});
+            try index.print("- [{s}]({s})\n", .{ try self.code(shown), self.files[own] });
+        } else try index.print("- {s}\n", .{try self.code(shown)});
+        if (entry.children.items.len == 0) return;
+        try toc.splatByteAll(' ', depth * 2);
+        try toc.writeAll("  items:\n");
+        var silent: Writer.Discarding = .init(&.{});
+        for (entry.children.items) |child| {
+            try self.entryOf(child, depth + 1, if (entry.page == null) index else &silent.writer, toc);
         }
     }
 
@@ -1026,4 +1086,51 @@ test "a type declared in a file is written in the page of that file" {
         \\Stops.
         \\
     , pages[0].text);
+}
+
+test "the pages of files are listed as the tree of their directories" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const run: []const ir.Symbol = &.{.{ .id = "x", .name = "run", .qualified_name = "run", .kind = .function, .signature = "void run(void)" }};
+    const pages = try writePages(arena.allocator(), "Title", .{
+        .files = &.{
+            .{ .path = "c/pool/ke/pool/pool.h", .language = "c" },
+            .{ .path = "zig/pool/src/a.zig", .language = "zig" },
+            .{ .path = "zig/pool/src/b.zig", .language = "zig" },
+            .{ .path = "top.zig", .language = "zig" },
+        },
+        .symbols = &.{
+            module("c/pool/ke/pool/pool.h", "c", .{}, run, &.{}),
+            module("zig/pool/src/a.zig", "zig", .{}, run, &.{}),
+            module("zig/pool/src/b.zig", "zig", .{}, run, &.{}),
+            module("top.zig", "zig", .{}, run, &.{}),
+        },
+    });
+    try std.testing.expectEqual(6, pages.len);
+    try std.testing.expectEqualStrings(
+        \\# Title
+        \\
+        \\- `c/pool/ke/pool`
+        \\  - [`pool.h`](c-pool-ke-pool-pool.h.md)
+        \\- `zig/pool/src`
+        \\  - [`a.zig`](zig-pool-src-a.zig.md)
+        \\  - [`b.zig`](zig-pool-src-b.zig.md)
+        \\- [`top.zig`](top.zig.md)
+        \\
+    , pages[4].text);
+    try std.testing.expectEqualStrings(
+        \\- name: "c/pool/ke/pool"
+        \\  items:
+        \\  - name: "pool.h"
+        \\    href: c-pool-ke-pool-pool.h.md
+        \\- name: "zig/pool/src"
+        \\  items:
+        \\  - name: "a.zig"
+        \\    href: zig-pool-src-a.zig.md
+        \\  - name: "b.zig"
+        \\    href: zig-pool-src-b.zig.md
+        \\- name: "top.zig"
+        \\  href: top.zig.md
+        \\
+    , pages[5].text);
 }
