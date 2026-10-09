@@ -24,6 +24,8 @@
 //! scope has it, every symbol of every file is searched, the file of the text first. Each
 //! following part is looked for among the members of what the previous part named, going
 //! through an import into the file it resolved to and through an alias into what it names.
+//! What is asked of a C import is looked for in the headers its file includes, and then in
+//! the headers those include.
 //! An import may lead to a file that is not in the document, in which case a `Source` is
 //! asked for it.
 //!
@@ -475,6 +477,9 @@ const Linker = struct {
             const members = current.symbol.members;
             if (named(members, part)) |member| {
                 current = .{ .file = current.file, .symbol = member };
+            } else if (isImport(current.symbol) and current.symbol.value.len == 0) {
+                var visited: std.ArrayList([]const u8) = .empty;
+                current = try self.included(current.file, part, &visited) orelse return .accepted;
             } else if (current.symbol.kind == .namespace) {
                 current = self.inNamespace(current.symbol.qualified_name, part) orelse return .accepted;
             } else return if (members.len == 0) .accepted else .unknown;
@@ -522,6 +527,25 @@ const Linker = struct {
         for (from.file.imports) |import| {
             if (import.path.len == 0 or !std.mem.eql(u8, import.name, name)) continue;
             return self.unitAt(import.path);
+        }
+        return null;
+    }
+
+    fn included(self: *Linker, file: *const ir.File, name: []const u8, visited: *std.ArrayList([]const u8)) Allocator.Error!?Scope {
+        var reached: std.ArrayList(Scope) = .empty;
+        for (file.imports) |import| {
+            if (import.kind != .include or import.path.len == 0) continue;
+            const seen = for (visited.items) |path| {
+                if (std.mem.eql(u8, path, import.path)) break true;
+            } else false;
+            if (seen) continue;
+            try visited.append(self.arena, import.path);
+            const unit = try self.unitAt(import.path) orelse continue;
+            if (named(unit.symbol.members, name)) |symbol| return .{ .file = unit.file, .symbol = symbol };
+            try reached.append(self.arena, unit);
+        }
+        for (reached.items) |unit| {
+            if (try self.included(unit.file, name, visited)) |found| return found;
         }
         return null;
     }
@@ -1008,4 +1032,28 @@ test "a name declared outside the sources is no problem when it is known to the 
     const result = try link(allocator, try documentOf(allocator, &.{file}), .{ .external = &.{ "TomlTable", "Toml" } });
     try std.testing.expectEqual(1, result.problems.len);
     try std.testing.expectEqualStrings("Missing", result.problems[0].citation);
+}
+
+test "a name asked of a C import is found in the headers its file includes" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var main = try zig_source.read(allocator, "main.zig",
+        \\const c = @import("c.zig").c;
+        \\fn run(pool: *c.pool, failure: c.failure, other: c.missing) void {}
+    );
+    main.file.imports = &.{.{ .name = "c.zig", .kind = .file, .path = "c.zig" }};
+    var imports = try zig_source.read(allocator, "c.zig",
+        \\pub const c = @cImport(@cInclude("pool.h"));
+    );
+    imports.file.imports = &.{.{ .name = "pool.h", .kind = .include, .path = "pool.h" }};
+    var pool = try c_source.read(allocator, .c, "pool.h", "#include \"failure.h\"\n#include \"pool.h\"\ntypedef struct pool pool;\n", &.{});
+    pool.file.imports = &.{ .{ .name = "failure.h", .kind = .include, .path = "failure.h" }, .{ .name = "pool.h", .kind = .include, .path = "pool.h" } };
+    const failure = try c_source.read(allocator, .c, "failure.h", "typedef int failure;\n", &.{});
+    const result = try link(allocator, try documentOf(allocator, &.{ main, imports, pool, failure }), .{});
+    try std.testing.expectEqual(0, result.problems.len);
+    const run = result.document.symbols[0].members[1];
+    try std.testing.expectEqualStrings("c:pool.h#pool", run.params[0].type.target);
+    try std.testing.expectEqualStrings("c:failure.h#failure", run.params[1].type.target);
+    try std.testing.expectEqualStrings("", run.params[2].type.target);
 }
