@@ -14,6 +14,8 @@
 //! one. The sentences a file
 //! verifies close it as a list under "Verified behaviour".
 //!
+//! A signature wider than a page of code is written with one parameter to a line.
+//!
 //! Documentation arrives as an `ir.Text` and is written out as Markdown here: this is the
 //! only place of the package that produces that markup. A mention whose target has a
 //! section becomes a link to it. The link target is the anchor a Markdown renderer derives
@@ -394,7 +396,7 @@ const Renderer = struct {
             return;
         }
         try self.heading(level, symbol.qualified_name, true, symbol.id);
-        try writer.print("\n```{s}\n{s}\n```\n", .{ language, symbol.signature });
+        try writer.print("\n```{s}\n{s}\n```\n", .{ language, try broken(self.arena, symbol.signature) });
         if (symbol.kind == .alias) {
             if (try self.linkTo(symbol.target)) |anchor| {
                 try writer.print("\nAlias of [{s}]({s}).\n", .{ try self.code(self.nameOf(symbol.target)), anchor });
@@ -653,6 +655,52 @@ const Renderer = struct {
         return out.toOwnedSlice(self.arena);
     }
 };
+
+const widest_signature = 100;
+
+fn broken(arena: Allocator, signature: []const u8) Allocator.Error![]const u8 {
+    if (signature.len <= widest_signature or std.mem.indexOfScalar(u8, signature, '\n') != null) return signature;
+    var depth: usize = 0;
+    var open: usize = 0;
+    var commas: std.ArrayList(usize) = .empty;
+    var angles: usize = 0;
+    const close = for (signature, 0..) |ch, at| {
+        switch (ch) {
+            '<' => if (depth != 0) {
+                angles += 1;
+            },
+            '>' => if (angles != 0 and signature[at - 1] != '-' and signature[at - 1] != '=') {
+                angles -= 1;
+            },
+            '(', '[', '{' => {
+                if (depth == 0 and ch == '(') {
+                    open = at;
+                    commas.clearRetainingCapacity();
+                }
+                depth += 1;
+            },
+            ')', ']', '}' => {
+                if (depth == 0) return signature;
+                depth -= 1;
+                if (depth == 0 and ch == ')' and commas.items.len != 0) break at;
+            },
+            ',' => if (depth == 1 and angles == 0) try commas.append(arena, at),
+            else => {},
+        }
+    } else return signature;
+
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(arena, signature[0 .. open + 1]);
+    var start = open + 1;
+    for (commas.items) |comma| {
+        try out.print(arena, "\n    {s},", .{std.mem.trim(u8, signature[start..comma], " ")});
+        start = comma + 1;
+    }
+    const last = std.mem.trim(u8, signature[start..close], " ");
+    if (last.len != 0) try out.print(arena, "\n    {s}", .{last});
+    try out.print(arena, "\n{s}", .{signature[close..]});
+    return out.toOwnedSlice(arena);
+}
 
 const Group = enum {
     value,
@@ -1201,4 +1249,33 @@ test "constants, aliases and plain macros open their file as one table" {
         \\```
         \\
     , output);
+}
+
+test "a long signature is broken at its parameters and a short one is kept" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("fn run(a: u8, b: u8) void", try broken(arena.allocator(), "fn run(a: u8, b: u8) void"));
+    try std.testing.expectEqualStrings(
+        \\pub fn loadShader(
+        \\    self: [*c]c.ke_render_service,
+        \\    name: [*c]const u8,
+        \\    compare: fn (a: u8, b: u8) bool,
+        \\    out_error: [*c][*c]c.ke_error
+        \\) callconv(.c) c.ke_gpu_shader_module
+    , try broken(arena.allocator(), "pub fn loadShader(self: [*c]c.ke_render_service, name: [*c]const u8, compare: fn (a: u8, b: u8) bool, out_error: [*c][*c]c.ke_error) callconv(.c) c.ke_gpu_shader_module"));
+    try std.testing.expectEqualStrings(
+        \\public IReadOnlyDictionary<string, IReadOnlyList<Symbol>> Collect(
+        \\    Dictionary<string, List<Symbol>> found,
+        \\    Func<Symbol, bool> keep
+        \\)
+    , try broken(arena.allocator(), "public IReadOnlyDictionary<string, IReadOnlyList<Symbol>> Collect(Dictionary<string, List<Symbol>> found, Func<Symbol, bool> keep)"));
+    try std.testing.expectEqualStrings(
+        \\ke_task *(*dispatch_on_complete)(
+        \\    struct ke_scheduler *self,
+        \\    ke_task_func func,
+        \\    void *data,
+        \\    ke_task_on_complete_func on_complete,
+        \\    void *user_data
+        \\)
+    , try broken(arena.allocator(), "ke_task *(*dispatch_on_complete)(struct ke_scheduler *self, ke_task_func func, void *data, ke_task_on_complete_func on_complete, void *user_data)"));
 }
