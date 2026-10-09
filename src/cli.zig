@@ -72,6 +72,9 @@ const usage_query =
     \\                                         or those whose documentation holds the words
     \\                                         when no symbol has the name
     \\      --text                             look in the documentation and not in the names
+    \\      --full                             print every symbol in full, however many
+    \\      --limit-full <count>               print one line a symbol when there are more
+    \\                                         than this many (default: 5)
     \\      --json                             print them as JSON instead
     \\      --width <columns>                  where text breaks its lines (default: 80)
     \\
@@ -209,6 +212,9 @@ pub const Query = struct {
     json: bool = false,
     /// Whether the words are looked for in the documentation without trying the names.
     text: bool = false,
+    /// How many symbols are still printed in full. Above it each gets one line. Null to
+    /// print all of them in full.
+    limit_full: ?usize = 5,
     /// The column text is broken before.
     width: usize = 80,
     /// Where the answer goes. Null for standard output.
@@ -332,7 +338,7 @@ const Arguments = struct {
 
     fn columns(self: *Arguments, flag: []const u8) Failure!usize {
         const written = try self.value(flag);
-        return std.fmt.parseInt(usize, written, 10) catch self.invalid("{s} takes a number of columns, not `{s}`", .{ flag, written });
+        return std.fmt.parseInt(usize, written, 10) catch self.invalid("{s} takes a number, not `{s}`", .{ flag, written });
     }
 
     fn atMost(self: *Arguments, count: usize, what: []const u8) Failure!void {
@@ -456,6 +462,10 @@ const Arguments = struct {
                 command.json = true;
             } else if (is(flag, "--text")) {
                 command.text = true;
+            } else if (is(flag, "--full")) {
+                command.limit_full = null;
+            } else if (is(flag, "--limit-full")) {
+                command.limit_full = try self.columns(flag);
             } else if (is(flag, "--width")) {
                 command.width = try self.columns(flag);
             } else if (is(flag, "-o") or is(flag, "--output")) {
@@ -657,6 +667,11 @@ pub fn run(arena: Allocator, io: std.Io, args: []const [:0]const u8) !u8 {
                 try std.json.Stringify.value(found, .{ .whitespace = .indent_2 }, &text.writer);
                 try text.writer.writeByte('\n');
             } else for (found, 0..) |symbol, index| {
+                const brief = if (query.limit_full) |limit| found.len > limit else false;
+                if (brief) {
+                    try docir.text.writeLine(arena, &text.writer, symbol, .{ .width = query.width });
+                    continue;
+                }
                 if (index != 0) try text.writer.writeByte('\n');
                 try docir.text.writeSymbol(arena, &text.writer, symbol, .{ .width = query.width });
             }

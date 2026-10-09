@@ -7,6 +7,9 @@
 //! inside a line are set between grave accents, and a link is followed by its address
 //! between parentheses.
 //!
+//! `writeLine` prints a symbol on one line, for an answer of many symbols, and `writeHit`
+//! prints one with the paragraph that answered a search.
+//!
 //! `write` prints every symbol of the documented files for which `ir.Symbol.isListed`,
 //! which is what the Markdown writer gives a section to. `writeSymbol` prints one symbol in
 //! full, whether it is documented or not, and closes it with one line per member, so that
@@ -53,6 +56,19 @@ pub fn writeHit(arena: Allocator, writer: *Writer, symbol: ir.Symbol, paragraph:
     try printer.opening(symbol);
     try writer.writeByte('\n');
     try printer.wrapped(paragraph, indent, indent);
+}
+
+/// Prints `symbol` on one line: its qualified name, what it is, where it is declared and
+/// the first sentence of its documentation.
+pub fn writeLine(arena: Allocator, writer: *Writer, symbol: ir.Symbol, options: Options) Error!void {
+    const printer: Printer = .{ .arena = arena, .writer = writer, .width = options.width };
+    try writer.print("{s}  {s}", .{ symbol.qualified_name, if (symbol.form.len != 0) symbol.form else @tagName(symbol.kind) });
+    if (symbol.kind == .namespace and symbol.locations.len > 1) {
+        try writer.print("  {d} files", .{symbol.locations.len});
+    } else if (symbol.locations.len != 0) try writer.print("  {s}:{d}", .{ symbol.locations[0].file, symbol.locations[0].line });
+    const said = try printer.sentence(symbol.doc);
+    if (said.len != 0) try writer.print("  {s}", .{said});
+    try writer.writeByte('\n');
 }
 
 /// Prints `symbol` in full and one line for each of its members.
@@ -352,6 +368,19 @@ test "a document is printed with its public and its documented symbols" {
         \\    field, public
         \\
         \\    int count
+        \\
+    , out.written());
+}
+
+test "a symbol is printed on one line with the first sentence of what it says" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var out: Writer.Allocating = .init(arena.allocator());
+    try writeLine(arena.allocator(), &out.writer, sample.members[0], .{});
+    try writeLine(arena.allocator(), &out.writer, sample.members[1], .{});
+    try std.testing.expectEqualStrings(
+        \\pool.wait  field  Waits.
+        \\pool.count  field
         \\
     , out.written());
 }
