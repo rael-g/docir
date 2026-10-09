@@ -13,8 +13,6 @@ sources ── read ──▶ document ── link ──▶ linked document ─
 | C, C++ | tree-sitter | Doxygen |
 | C# | tree-sitter | XML documentation |
 
-Requires Zig 0.16. Every dependency is source in `build.zig.zon`.
-
 ## Command line
 
 ```bash
