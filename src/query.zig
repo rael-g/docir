@@ -11,6 +11,9 @@
 //! that paragraph with it. It is what answers a question about an idea that no symbol is
 //! named after.
 //!
+//! `roots` answers what a document holds before any name is known: its documented files
+//! and its namespaces.
+//!
 //! A namespace declared in several files is in the document once for each of them. It is
 //! answered once, with what all of them declare in it.
 
@@ -103,6 +106,51 @@ fn saidIn(arena: Allocator, text: ir.Text, wanted: []const []const u8) Allocator
         return paragraph;
     }
     return null;
+}
+
+/// What `document` holds at the top: each documented file that says or declares something
+/// itself, in the order of the document, then each namespace that declares something, once
+/// and in the order of the names.
+pub fn roots(arena: Allocator, document: ir.Document) Allocator.Error![]const ir.Symbol {
+    var out: std.ArrayList(ir.Symbol) = .empty;
+    var spaces: std.ArrayList(ir.Symbol) = .empty;
+    const count = @min(document.files.len, document.symbols.len);
+    for (document.files[0..count], document.symbols[0..count]) |file, root| {
+        if (!file.documented) continue;
+        if (!root.doc.isEmpty() or holdsDeclarations(root)) try out.append(arena, root);
+        try spacesIn(arena, root.members, &spaces);
+    }
+    const joined = try arena.dupe(ir.Symbol, try united(arena, spaces.items));
+    std.mem.sort(ir.Symbol, joined, {}, struct {
+        fn before(_: void, a: ir.Symbol, b: ir.Symbol) bool {
+            return std.mem.lessThan(u8, a.qualified_name, b.qualified_name);
+        }
+    }.before);
+    try out.appendSlice(arena, joined);
+    return out.toOwnedSlice(arena);
+}
+
+fn holdsDeclarations(symbol: ir.Symbol) bool {
+    for (symbol.members) |member| {
+        if (member.kind != .namespace) return true;
+    }
+    return false;
+}
+
+fn spacesIn(arena: Allocator, list: []const ir.Symbol, spaces: *std.ArrayList(ir.Symbol)) Allocator.Error!void {
+    for (list) |symbol| {
+        if (symbol.kind != .namespace) continue;
+        if (holdsDeclarations(symbol)) {
+            var own = symbol;
+            var kept: std.ArrayList(ir.Symbol) = .empty;
+            for (symbol.members) |member| {
+                if (member.kind != .namespace) try kept.append(arena, member);
+            }
+            own.members = try kept.toOwnedSlice(arena);
+            try spaces.append(arena, own);
+        }
+        try spacesIn(arena, symbol.members, spaces);
+    }
 }
 
 const Match = enum { whole, end, piece };
@@ -205,4 +253,26 @@ test "a search answers the symbols whose documentation holds every word, with th
     try std.testing.expectEqualStrings("flush", hits[1].symbol.name);
     try std.testing.expectEqual(0, (try search(arena.allocator(), document, "nothing")).len);
     try std.testing.expectEqual(0, (try search(arena.allocator(), document, " ")).len);
+}
+
+test "the roots of a document are its files that declare something and its namespaces, once each" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const pool: ir.Symbol = .{ .id = "csharp:A.cs#Ke.Run.Pool", .name = "Pool", .qualified_name = "Ke.Run.Pool", .kind = .type };
+    const inner: ir.Symbol = .{ .id = "csharp:A.cs#Ke.Run", .name = "Run", .qualified_name = "Ke.Run", .kind = .namespace, .members = &.{pool} };
+    const outer: ir.Symbol = .{ .id = "csharp:A.cs#Ke", .name = "Ke", .qualified_name = "Ke", .kind = .namespace, .members = &.{inner} };
+    const document: ir.Document = .{
+        .files = &.{ .{ .path = "A.cs", .language = "csharp" }, .{ .path = "B.cs", .language = "csharp" }, .{ .path = "a.zig", .language = "zig" }, .{ .path = "b.zig", .language = "zig", .documented = false } },
+        .symbols = &.{
+            .{ .id = "csharp:A.cs", .name = "A", .qualified_name = "A.cs", .kind = .module, .members = &.{outer} },
+            .{ .id = "csharp:B.cs", .name = "B", .qualified_name = "B.cs", .kind = .module, .members = &.{outer} },
+            .{ .id = "zig:a.zig", .name = "a", .qualified_name = "a.zig", .kind = .module, .members = &.{.{ .id = "zig:a.zig#run", .name = "run", .qualified_name = "run", .kind = .function }} },
+            .{ .id = "zig:b.zig", .name = "b", .qualified_name = "b.zig", .kind = .module, .members = &.{.{ .id = "zig:b.zig#run", .name = "run", .qualified_name = "run", .kind = .function }} },
+        },
+    };
+    const found = try roots(arena.allocator(), document);
+    try std.testing.expectEqual(2, found.len);
+    try std.testing.expectEqualStrings("a.zig", found[0].qualified_name);
+    try std.testing.expectEqualStrings("Ke.Run", found[1].qualified_name);
+    try std.testing.expectEqual(2, found[1].members.len);
 }

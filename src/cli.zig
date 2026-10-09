@@ -72,6 +72,9 @@ const usage_query =
     \\                                         or those whose documentation holds the words
     \\                                         when no symbol has the name
     \\      --text                             look in the documentation and not in the names
+    \\      --members                          print one line for each member of the symbols
+    \\                                         found, and not what they say
+    \\  docir query --list [document]          print the files and namespaces of a document
     \\      --full                             print every symbol in full, however many
     \\      --limit-full <count>               print one line a symbol when there are more
     \\                                         than this many (default: 5)
@@ -212,6 +215,10 @@ pub const Query = struct {
     json: bool = false,
     /// Whether the words are looked for in the documentation without trying the names.
     text: bool = false,
+    /// Whether the members of the symbols found are printed, a line each, and nothing else.
+    members: bool = false,
+    /// Whether the files and namespaces of the document are printed, with no name asked.
+    list: bool = false,
     /// How many symbols are still printed in full. Above it each gets one line. Null to
     /// print all of them in full.
     limit_full: ?usize = 5,
@@ -462,6 +469,10 @@ const Arguments = struct {
                 command.json = true;
             } else if (is(flag, "--text")) {
                 command.text = true;
+            } else if (is(flag, "--members")) {
+                command.members = true;
+            } else if (is(flag, "--list")) {
+                command.list = true;
             } else if (is(flag, "--full")) {
                 command.limit_full = null;
             } else if (is(flag, "--limit-full")) {
@@ -472,6 +483,13 @@ const Arguments = struct {
                 command.output = try self.value(flag);
             } else return self.unknown(flag);
         }
+        if (command.list) {
+            if (command.text or command.members) return self.invalid("--list asks for no name, so it goes with neither --text nor --members", .{});
+            try self.atMost(1, "one document");
+            if (self.positional.items.len == 1) command.input = self.positional.items[0];
+            return command;
+        }
+        if (command.text and command.members) return self.invalid("--members lists what symbols hold, and --text finds none by name", .{});
         try self.atMost(2, "one name and one document");
         if (self.positional.items.len == 0) return self.invalid("query needs the name to look for", .{});
         command.name = self.positional.items[0];
@@ -645,8 +663,25 @@ pub fn run(arena: Allocator, io: std.Io, args: []const [:0]const u8) !u8 {
         },
         .query => |query| {
             const document = try take(arena, io, query.input) orelse return 1;
-            const found: []const docir.ir.Symbol = if (query.text) &.{} else try docir.query.find(arena, document, query.name);
             var text: std.Io.Writer.Allocating = .init(arena);
+            if (query.list) {
+                const roots = try docir.query.roots(arena, document);
+                if (query.json) {
+                    try std.json.Stringify.value(roots, .{ .whitespace = .indent_2 }, &text.writer);
+                    try text.writer.writeByte('\n');
+                } else for (roots) |root| try docir.text.writeLine(arena, &text.writer, root, .{ .width = query.width });
+                try emit(io, query.output, text.written());
+                return 0;
+            }
+            const found: []const docir.ir.Symbol = if (query.text) &.{} else try docir.query.find(arena, document, query.name);
+            if (query.members and found.len != 0 and !query.json) {
+                for (found, 0..) |symbol, index| {
+                    if (index != 0) try text.writer.writeByte('\n');
+                    try docir.text.writeMembers(arena, &text.writer, symbol, .{ .width = query.width });
+                }
+                try emit(io, query.output, text.written());
+                return 0;
+            }
             if (found.len == 0) {
                 const hits = try docir.query.search(arena, document, query.name);
                 if (hits.len == 0) {

@@ -65,7 +65,7 @@ pub fn writeLine(arena: Allocator, writer: *Writer, symbol: ir.Symbol, options: 
     try writer.print("{s}  {s}", .{ symbol.qualified_name, if (symbol.form.len != 0) symbol.form else @tagName(symbol.kind) });
     if (symbol.kind == .namespace and symbol.locations.len > 1) {
         try writer.print("  {d} files", .{symbol.locations.len});
-    } else if (symbol.locations.len != 0) try writer.print("  {s}:{d}", .{ symbol.locations[0].file, symbol.locations[0].line });
+    } else if (symbol.locations.len != 0 and symbol.kind != .module) try writer.print("  {s}:{d}", .{ symbol.locations[0].file, symbol.locations[0].line });
     const said = try printer.sentence(symbol.doc);
     if (said.len != 0) try writer.print("  {s}", .{said});
     try writer.writeByte('\n');
@@ -77,22 +77,35 @@ pub fn writeSymbol(arena: Allocator, writer: *Writer, symbol: ir.Symbol, options
     try printer.symbol(symbol);
     if (symbol.members.len == 0) return;
     try writer.print("\n{s}Members:\n", .{indent});
-    var longest: usize = 0;
-    for (symbol.members) |member| longest = @max(longest, member.name.len);
-    for (symbol.members) |member| {
-        try writer.print("{s}  {s}", .{ indent, member.name });
-        try writer.splatByteAll(' ', longest - member.name.len + 2);
-        try writer.writeAll(if (member.form.len != 0) member.form else @tagName(member.kind));
-        const said = try printer.sentence(member.doc);
-        if (said.len != 0) try writer.print("  {s}", .{said});
-        try writer.writeByte('\n');
-    }
+    try printer.members(symbol, indent ++ "  ");
+}
+
+/// Prints `symbol` on one line and one line for each of its members under it, without what
+/// it says of itself.
+pub fn writeMembers(arena: Allocator, writer: *Writer, symbol: ir.Symbol, options: Options) Error!void {
+    const printer: Printer = .{ .arena = arena, .writer = writer, .width = options.width };
+    try writeLine(arena, writer, symbol, options);
+    try printer.members(symbol, "  ");
 }
 
 const Printer = struct {
     arena: Allocator,
     writer: *Writer,
     width: usize,
+
+    fn members(self: Printer, of: ir.Symbol, margin: []const u8) Error!void {
+        const writer = self.writer;
+        var longest: usize = 0;
+        for (of.members) |member| longest = @max(longest, member.name.len);
+        for (of.members) |member| {
+            try writer.print("{s}{s}", .{ margin, member.name });
+            try writer.splatByteAll(' ', longest - member.name.len + 2);
+            try writer.writeAll(if (member.form.len != 0) member.form else @tagName(member.kind));
+            const said = try self.sentence(member.doc);
+            if (said.len != 0) try writer.print("  {s}", .{said});
+            try writer.writeByte('\n');
+        }
+    }
 
     fn all(self: Printer, found: ir.Symbol) Error!void {
         if (!found.isListed()) return;
