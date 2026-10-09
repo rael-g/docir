@@ -48,7 +48,22 @@ ke.Pool.wait
     Blocks until `task` finishes.
 ```
 
+`query` also answers where an idea is explained, what a symbol holds and what a document
+holds, over one document or several:
+
+```bash
+docir query --text "structural changes" api.linked.json
+docir query --members Pool api.linked.json
+docir query --list docs/
+```
+
 `docir help` lists every option.
+
+## Agents
+
+[`skills/docir/SKILL.md`](skills/docir/SKILL.md) teaches a coding agent to answer from the
+documentation with `docir query` before it reads source. It is written in the Agent Skills
+format: copy the `skills/docir` directory into the skills directory of the agent in use.
 
 ## Zig build
 
